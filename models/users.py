@@ -1,6 +1,7 @@
 from pydantic import EmailStr
-from sqlmodel import SQLModel, Field
-from typing import Optional
+from sqlmodel import SQLModel, Field, Relationship
+from typing import Optional, List
+from models.core import AppBaseModel
 
 
 # Types
@@ -59,7 +60,7 @@ class ResetPasswordRequest(SQLModel):
 
 
 # Models
-class User(SQLModel, table=True):
+class User(AppBaseModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str
     email: str
@@ -70,3 +71,5 @@ class User(SQLModel, table=True):
     num_hosted: Optional[int] = 0
     num_uploads: Optional[int] = 0
     num_photos: Optional[int] = 0
+
+    events: List["Event"] = Relationship(back_populates="created_by")

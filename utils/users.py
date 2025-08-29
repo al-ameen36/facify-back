@@ -9,8 +9,8 @@ from sqlmodel import Session, select
 from dotenv import load_dotenv
 import os
 from jose import JWTError
-from fastapi_mail import FastMail, MessageSchema
-from models.users import User
+from fastapi_mail import MessageSchema
+from models import User
 from db import get_session
 
 load_dotenv()

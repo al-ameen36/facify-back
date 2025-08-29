@@ -3,7 +3,7 @@ from datetime import timedelta
 from fastapi import BackgroundTasks, Depends, APIRouter, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlmodel import Session, select
-from models.users import (
+from models import (
     Token,
     User,
     UserRead,

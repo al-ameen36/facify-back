@@ -1,11 +1,12 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from db import create_db_and_tables, get_session
-from models.users import User
+from models import User
 from utils.users import get_password_hash
 from sqlmodel import select
 from dotenv import load_dotenv
 from routes.users import router as auth_router
+from routes.events import router as event_router
 import os
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -71,6 +72,7 @@ app.add_middleware(
 
 # Include routes
 app.include_router(auth_router)
+app.include_router(event_router)
 
 
 @app.get("/")
