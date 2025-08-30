@@ -1,9 +1,12 @@
 import os
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
-from sqlmodel import Session
+from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException
+from sqlmodel import Session, func, select
 from db import get_session
 from models import User, Event, Media, SingleItemResponse
+from models.core import PaginatedResponse, Pagination
 from utils.users import get_current_user
+from typing import Optional
+
 
 router = APIRouter(prefix="/media", tags=["media"])
 
@@ -21,7 +24,7 @@ async def upload_media(
     owner_id: int = Form(...),
     owner_type: str = Form(...),
     media_type: str = Form(...),
-    user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
     # Validate media_type
@@ -67,10 +70,81 @@ async def upload_media(
         type=media_type,
         owner_id=owner_id,
         owner_type=owner_type,
-        uploaded_by=user.id,
+        uploaded_by=current_user.id,
     )
     session.add(media)
     session.commit()
     session.refresh(media)
 
     return SingleItemResponse(data=media, message="Media uploaded successfully")
+
+
+@router.get("/me", response_model=PaginatedResponse[Media])
+def get_user_uploads(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1),
+):
+    total = session.exec(select(func.count(Media.id))).one()
+    offset = (page - 1) * per_page
+    user_uploads = session.exec(
+        select(Media)
+        .filter(Media.uploaded_by == current_user.id)
+        .order_by(Media.created_at.desc())
+        .offset(offset)
+        .limit(per_page)
+    ).all()
+
+    total_pages = ((total - 1) // per_page) + 1 if total else 0
+
+    return PaginatedResponse[Media](
+        message="User uploads retrieved successfully",
+        data=user_uploads,
+        pagination=Pagination(
+            total=total, page=page, per_page=per_page, total_pages=total_pages
+        ),
+    )
+
+
+@router.get("/event/{event_id}", response_model=PaginatedResponse[Media])
+async def get_event_media(
+    event_id: int,
+    session: Session = Depends(get_session),
+    media_type: Optional[str] = Query(
+        None, description="Filter by media type: image or video"
+    ),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1),
+):
+    # Base query
+    query = select(Media).where(
+        Media.owner_id == event_id,
+        Media.owner_type == "event",  # since you're using polymorphic owner
+    )
+
+    # Apply filter if media_type is specified
+    if media_type:
+        query = query.where(Media.type == media_type)
+
+    # Count total
+    total = session.exec(select(func.count()).select_from(query.subquery())).one()
+
+    # Apply pagination
+    offset = (page - 1) * per_page
+    event_media = session.exec(
+        query.order_by(Media.id.desc()).offset(offset).limit(per_page)
+    ).all()
+
+    total_pages = ((total - 1) // per_page) + 1 if total else 0
+
+    return PaginatedResponse[Media](
+        message="Event media retrieved successfully",
+        data=event_media,
+        pagination=Pagination(
+            total=total,
+            page=page,
+            per_page=per_page,
+            total_pages=total_pages,
+        ),
+    )
