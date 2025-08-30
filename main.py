@@ -7,6 +7,7 @@ from sqlmodel import select
 from dotenv import load_dotenv
 from routes.users import router as auth_router
 from routes.events import router as event_router
+from routes.media import router as media_router
 import os
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -73,6 +74,7 @@ app.add_middleware(
 # Include routes
 app.include_router(auth_router)
 app.include_router(event_router)
+app.include_router(media_router)
 
 
 @app.get("/")

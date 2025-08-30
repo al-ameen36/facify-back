@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 load_dotenv()
 
 # Import all models
-from models import User, Event
+from models import User, Event, Media
 
 from sqlmodel import SQLModel
 

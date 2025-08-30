@@ -73,3 +73,4 @@ class User(AppBaseModel, table=True):
     num_photos: Optional[int] = 0
 
     events: List["Event"] = Relationship(back_populates="created_by")
+    uploads: list["Media"] = Relationship(back_populates="uploader")

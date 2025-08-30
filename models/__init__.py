@@ -9,6 +9,8 @@ from .users import (
 )
 from .events import Event, EventCreate
 from .core import AppBaseModel, SingleItemResponse, PaginatedResponse
+from .media import Media
+
 
 # Rebuild models to resolve forward references
 AppBaseModel.model_rebuild()
@@ -25,6 +27,8 @@ ResetPasswordRequest.model_rebuild()
 
 Event.model_rebuild()
 EventCreate.model_rebuild()
+
+Media.model_rebuild()
 
 
 # Export models
@@ -44,4 +48,6 @@ __all__ = [
     # Events
     "Event",
     "EventCreate",
+    # Media
+    "Media",
 ]
