@@ -7,8 +7,8 @@ from .users import (
     ForgotPasswordRequest,
     ResetPasswordRequest,
 )
-from .events import Event, EventCreate
-from .core import AppBaseModel, SingleItemResponse, PaginatedResponse
+from .events import Event, EventCreate, EventParticipant, JoinEventRequest
+from .core import AppBaseModel, Pagination, SingleItemResponse, PaginatedResponse
 from .media import Media
 
 
@@ -16,6 +16,7 @@ from .media import Media
 AppBaseModel.model_rebuild()
 SingleItemResponse.model_rebuild()
 PaginatedResponse.model_rebuild()
+Pagination.model_rebuild()
 
 User.model_rebuild()
 Token.model_rebuild()
@@ -27,6 +28,8 @@ ResetPasswordRequest.model_rebuild()
 
 Event.model_rebuild()
 EventCreate.model_rebuild()
+JoinEventRequest.model_rebuild()
+EventParticipant.model_rebuild()
 
 Media.model_rebuild()
 
@@ -37,6 +40,7 @@ __all__ = [
     "AppBaseModel",
     "SingleItemResponse",
     "PaginatedResponse",
+    "Pagination",
     # Users
     "User",
     "Token",
@@ -48,6 +52,8 @@ __all__ = [
     # Events
     "Event",
     "EventCreate",
+    "JoinEventRequest",
+    "EventParticipant",
     # Media
     "Media",
 ]

@@ -2,6 +2,7 @@ from pydantic import EmailStr
 from sqlmodel import SQLModel, Field, Relationship
 from typing import Optional, List
 from models.core import AppBaseModel
+from models.events import EventParticipant
 
 
 # Types
@@ -74,3 +75,7 @@ class User(AppBaseModel, table=True):
 
     events: List["Event"] = Relationship(back_populates="created_by")
     uploads: list["Media"] = Relationship(back_populates="uploader")
+
+    events_joined: List["Event"] = Relationship(
+        back_populates="participants", link_model=EventParticipant
+    )
