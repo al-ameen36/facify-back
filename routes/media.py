@@ -29,9 +29,18 @@ async def upload_media(
     file: UploadFile = File(...),
     owner_id: int = Form(...),
     owner_type: str = Form(...),
+    usage_type: str = Form(...),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    # Validate usage_type
+    supported_usage_types = [item.value for item in MediaUsageType]
+    if usage_type not in supported_usage_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported usage_type. Supported types: {supported_usage_types}",
+        )
+
     # Validate owner_type
     if owner_type == "user":
         owner = session.get(User, owner_id)
@@ -90,7 +99,7 @@ async def upload_media(
         content_type=owner_type,
         owner_id=owner_id,
         media_type=media.mime_type.split("/")[0],
-        usage_type=MediaUsageType.GALLERY,
+        usage_type=usage_type,
         media_id=media.id,
         owner_type=owner_type,
     )
