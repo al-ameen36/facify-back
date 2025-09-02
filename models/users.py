@@ -17,6 +17,8 @@ class UserCreate(UserBase):
 
 class UserRead(UserBase):
     id: int
+    profile_picture: Optional["Media"] = None
+
     num_joined: int = 0
     num_hosted: int = 0
     num_uploads: int = 0
@@ -72,8 +74,8 @@ class User(SQLModel, table=True):
         usage = (
             session.query(MediaUsage)
             .filter(
-                MediaUsage.content_type == ContentOwnerType.USER,
-                MediaUsage.object_id == self.id,
+                MediaUsage.owner_type == ContentOwnerType.USER,
+                MediaUsage.owner_id == self.id,
                 MediaUsage.usage_type == MediaUsageType.PROFILE_PICTURE,
             )
             .first()

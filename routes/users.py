@@ -90,6 +90,10 @@ async def login_for_access_token(
     access_token = create_access_token(user.username)
     refresh_token = create_refresh_token(user.username)
 
+    profile_picture = user.get_profile_picture(session)
+    user = UserRead.model_validate(user)
+    user.profile_picture = profile_picture
+
     return Token(
         access_token=access_token,
         refresh_token=refresh_token,

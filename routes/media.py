@@ -94,7 +94,7 @@ async def upload_media(
     session.commit()
     session.refresh(media)
 
-    # Save MediaUsage (always GALLERY for event media)
+    # Save MediaUsage
     usage = MediaUsage(
         content_type=owner_type,
         owner_id=owner_id,
