@@ -14,7 +14,6 @@ def create_event(
     session: Session,
     name: str,
     description: str,
-    cover_photo: str,
     start_time: str,
     end_time: str,
     location: str,
@@ -24,7 +23,6 @@ def create_event(
     event = Event(
         name=name,
         description=description,
-        cover_photo=cover_photo,
         start_time=start_time,
         end_time=end_time,
         location=location,

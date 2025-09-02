@@ -1,11 +1,15 @@
 import os
 from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException
+from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, func, select
 from db import get_session
 from models import User, Event, Media, SingleItemResponse
-from models.core import PaginatedResponse, Pagination
+from models.core import ContentOwnerType, MediaUsageType, PaginatedResponse, Pagination
+from models.media import MediaUsage
 from utils.users import get_current_user
 from typing import Optional
+import mimetypes
+from moviepy import VideoFileClip
 
 
 router = APIRouter(prefix="/media", tags=["media"])
@@ -13,35 +17,22 @@ router = APIRouter(prefix="/media", tags=["media"])
 MEDIA_DIR = "static/media"
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
+router.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
+
 # Allowed MIME types
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 ALLOWED_VIDEO_TYPES = {"video/mp4", "video/avi", "video/mov", "video/mkv"}
 
 
-@router.post("/", response_model=SingleItemResponse[Media])
+@router.post("", response_model=SingleItemResponse[Media])
 async def upload_media(
     file: UploadFile = File(...),
     owner_id: int = Form(...),
     owner_type: str = Form(...),
-    media_type: str = Form(...),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    # Validate media_type
-    if media_type not in ["image", "video"]:
-        raise HTTPException(
-            status_code=400, detail="media_type must be 'image' or 'video'"
-        )
-
-    # Validate MIME type
-    content_type = file.content_type
-    if media_type == "image" and content_type not in ALLOWED_IMAGE_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid image type")
-    if media_type == "video" and content_type not in ALLOWED_VIDEO_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid video type")
-
-    # Validate owner exists based on owner_type
-    owner = None
+    # Validate owner_type
     if owner_type == "user":
         owner = session.get(User, owner_id)
         if not owner:
@@ -55,24 +46,55 @@ async def upload_media(
 
     # Save file to disk
     file_ext = os.path.splitext(file.filename)[1].lower()
-    safe_filename = f"{owner_type}_{owner_id}_{media_type}{file_ext}"
+    safe_filename = f"{owner_type}_{owner_id}_{os.urandom(8).hex()}{file_ext}"
     file_path = os.path.join(MEDIA_DIR, safe_filename)
 
     with open(file_path, "wb") as buffer:
         buffer.write(await file.read())
 
-    # Create a URL
-    file_url = f"/{file_path}"
+    # Derive metadata
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if not mime_type:
+        mime_type = file.content_type or "application/octet-stream"
 
-    # Save to DB
+    file_size = os.path.getsize(file_path)
+    duration = None
+
+    # If video, extract duration
+    if mime_type.startswith("video/"):
+        try:
+            with VideoFileClip(file_path) as clip:
+                duration = clip.duration
+        except Exception:
+            duration = None
+
+    # Create a URL
+    file_url = f"/media/{safe_filename}"
+
+    # Save Media
     media = Media(
         url=file_url,
-        type=media_type,
-        owner_id=owner_id,
-        owner_type=owner_type,
-        uploaded_by=current_user.id,
+        filename=safe_filename,
+        original_filename=file.filename,
+        file_size=file_size,
+        mime_type=mime_type,
+        duration=duration,
+        uploaded_by_id=current_user.id,
     )
     session.add(media)
+    session.commit()
+    session.refresh(media)
+
+    # Save MediaUsage (always GALLERY for event media)
+    usage = MediaUsage(
+        content_type=owner_type,
+        owner_id=owner_id,
+        media_type=media.mime_type.split("/")[0],
+        usage_type=MediaUsageType.GALLERY,
+        media_id=media.id,
+        owner_type=owner_type,
+    )
+    session.add(usage)
     session.commit()
     session.refresh(media)
 
@@ -90,7 +112,7 @@ def get_user_uploads(
     offset = (page - 1) * per_page
     user_uploads = session.exec(
         select(Media)
-        .filter(Media.uploaded_by == current_user.id)
+        .filter(Media.uploaded_by_id == current_user.id)
         .order_by(Media.created_at.desc())
         .offset(offset)
         .limit(per_page)
@@ -117,15 +139,22 @@ async def get_event_media(
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1),
 ):
-    # Base query
-    query = select(Media).where(
-        Media.owner_id == event_id,
-        Media.owner_type == "event",  # since you're using polymorphic owner
+    # Base query: select Media via MediaUsage
+    query = (
+        select(Media)
+        .join(MediaUsage, MediaUsage.media_id == Media.id)
+        .where(
+            MediaUsage.owner_id == event_id,
+            MediaUsage.owner_type == ContentOwnerType.EVENT,
+            MediaUsage.usage_type == MediaUsageType.GALLERY,
+        )
     )
 
     # Apply filter if media_type is specified
-    if media_type:
-        query = query.where(Media.type == media_type)
+    if media_type == "image":
+        query = query.where(Media.mime_type.like("image/%"))
+    elif media_type == "video":
+        query = query.where(Media.mime_type.like("video/%"))
 
     # Count total
     total = session.exec(select(func.count()).select_from(query.subquery())).one()

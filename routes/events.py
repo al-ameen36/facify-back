@@ -1,10 +1,10 @@
-from typing import Annotated
 from fastapi import Depends, APIRouter, HTTPException, Query
 from sqlmodel import Session, func, select
 from models import (
     Event,
     EventCreate,
     User,
+    UserRead,
     PaginatedResponse,
     SingleItemResponse,
     JoinEventRequest,
@@ -18,7 +18,7 @@ from db import get_session
 router = APIRouter(prefix="/events", tags=["event"])
 
 
-@router.post("/", response_model=SingleItemResponse[Event])
+@router.post("", response_model=SingleItemResponse[Event])
 async def add_event(
     event_data: EventCreate,
     session: Session = Depends(get_session),
@@ -37,7 +37,6 @@ async def add_event(
             start_time=event_data.start_time,
             end_time=event_data.end_time,
             privacy=event_data.privacy,
-            cover_photo=event_data.cover_photo,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -47,7 +46,7 @@ async def add_event(
 
 @router.get("/me", response_model=PaginatedResponse[Event])
 async def read_my_events(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1),
@@ -103,13 +102,13 @@ def join_event(
     return {"message": f"{current_user.username} joined the event"}
 
 
-@router.get("/{event_id}/participants", response_model=PaginatedResponse[User])
+@router.get("/{event_id}/participants", response_model=PaginatedResponse[UserRead])
 async def get_event_participants(
     event_id: int,
     session: Session = Depends(get_session),
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1),
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
 ):
     # count total participants
     total = session.exec(
@@ -128,9 +127,9 @@ async def get_event_participants(
 
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
-    return PaginatedResponse[User](
+    return PaginatedResponse[UserRead](
         message="Event participants retrieved successfully",
-        data=participants,
+        data=[UserRead.model_validate(participant) for participant in participants],
         pagination=Pagination(
             total=total, page=page, per_page=per_page, total_pages=total_pages
         ),

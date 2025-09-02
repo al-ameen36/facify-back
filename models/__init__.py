@@ -9,7 +9,7 @@ from .users import (
 )
 from .events import Event, EventCreate, EventParticipant, JoinEventRequest
 from .core import AppBaseModel, Pagination, SingleItemResponse, PaginatedResponse
-from .media import Media
+from .media import ContentOwnerType, Media, MediaUsage, MediaUsageType
 
 
 # Rebuild models to resolve forward references
@@ -32,6 +32,7 @@ JoinEventRequest.model_rebuild()
 EventParticipant.model_rebuild()
 
 Media.model_rebuild()
+MediaUsage.model_rebuild()
 
 
 # Export models
@@ -56,4 +57,7 @@ __all__ = [
     "EventParticipant",
     # Media
     "Media",
+    "MediaUsage",
+    "MediaUsageType",
+    "ContentOwnerType",
 ]

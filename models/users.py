@@ -1,21 +1,14 @@
 from pydantic import EmailStr
-from sqlmodel import SQLModel, Field, Relationship
+from sqlmodel import SQLModel, Field, Relationship, Column, String
 from typing import Optional, List
-from models.core import AppBaseModel
-from models.events import EventParticipant
+from models.media import ContentOwnerType, MediaUsage, MediaUsageType
 
 
-# Types
+# Types (Pydantic models for API)
 class UserBase(SQLModel):
-    username: str = Field(index=True, unique=True)
-    email: EmailStr = Field(index=True, unique=True)
+    username: str
+    email: EmailStr
     full_name: str
-    disabled: bool = False
-
-    num_joined: int = 0
-    num_hosted: int = 0
-    num_uploads: int = 0
-    num_photos: int = 0
 
 
 class UserCreate(UserBase):
@@ -24,8 +17,10 @@ class UserCreate(UserBase):
 
 class UserRead(UserBase):
     id: int
-    provider: Optional[str] = None
-    provider_id: Optional[str] = None
+    num_joined: int = 0
+    num_hosted: int = 0
+    num_uploads: int = 0
+    num_photos: int = 0
 
 
 class UserUpdate(SQLModel):
@@ -60,22 +55,60 @@ class ResetPasswordRequest(SQLModel):
     new_password: str
 
 
-# Models
-class User(AppBaseModel, table=True):
+# Database Models
+class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    username: str
-    email: str
+    username: str = Field(sa_column=Column(String, unique=True, index=True))
+    email: str = Field(sa_column=Column(String, unique=True, index=True))
     full_name: str
     hashed_password: str
 
-    num_joined: Optional[int] = 0
-    num_hosted: Optional[int] = 0
-    num_uploads: Optional[int] = 0
-    num_photos: Optional[int] = 0
-
     events: List["Event"] = Relationship(back_populates="created_by")
-    uploads: list["Media"] = Relationship(back_populates="uploader")
+    uploads: List["Media"] = Relationship(back_populates="uploaded_by")
 
-    events_joined: List["Event"] = Relationship(
-        back_populates="participants", link_model=EventParticipant
-    )
+    # Media helper methods
+    def get_profile_picture(self, session) -> Optional["Media"]:
+        """Get current profile picture"""
+        usage = (
+            session.query(MediaUsage)
+            .filter(
+                MediaUsage.content_type == ContentOwnerType.USER,
+                MediaUsage.object_id == self.id,
+                MediaUsage.usage_type == MediaUsageType.PROFILE_PICTURE,
+            )
+            .first()
+        )
+        return usage.media if usage else None
+
+    def get_my_uploads(self, session) -> List["Media"]:
+        """Get all my uploads"""
+        usages = (
+            session.query(MediaUsage)
+            .filter(
+                MediaUsage.content_type == ContentOwnerType.USER,
+                MediaUsage.object_id == self.id,
+                MediaUsage.usage_type == MediaUsageType.GALLERY,
+                MediaUsage.is_active == True,
+            )
+            .all()
+        )
+        return [usage.media for usage in usages if usage.media]
+
+    def set_profile_picture(self, session, media: "Media"):
+        """Set a new profile picture"""
+
+        usage = (
+            session.query(MediaUsage)
+            .filter(
+                MediaUsage.content_type == ContentOwnerType.USER,
+                MediaUsage.object_id == self.id,
+                MediaUsage.usage_type == MediaUsageType.PROFILE_PICTURE,
+                MediaUsage.is_active == True,
+            )
+            .first()
+        )
+
+        usage.media = media
+
+        session.commit()
+        return usage
