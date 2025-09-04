@@ -1,7 +1,8 @@
 from datetime import datetime
-from sqlmodel import SQLModel, Field, Relationship
+from models.media import MediaUsage
+from sqlmodel import SQLModel, Field, Relationship, select
 from typing import List, Optional
-from models.core import AppBaseModel
+from models.core import AppBaseModel, ContentOwnerType, MediaUsageType
 import random
 import string
 
@@ -24,7 +25,14 @@ class EventBase(SQLModel):
     start_time: datetime
     end_time: datetime
     privacy: str
-    secret: Optional[str] = None
+
+
+class EventRead(EventBase):
+    id: int
+    updated_at: datetime
+    created_by_id: int
+    created_at: datetime
+    cover_photo: Optional[str] = None
 
 
 class EventCreate(EventBase):
@@ -52,11 +60,12 @@ class Event(AppBaseModel, table=True):
     end_time: datetime
     privacy: str
     secret: Optional[str] = Field(default_factory=generate_event_secret)
+    cover_photo: Optional[str] = None
 
     # Relationships
     created_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
     created_by: Optional["User"] = Relationship(back_populates="events")
-    participants: List["User"] = Relationship(back_populates="events")
+    participants: List["User"] = Relationship(back_populates="joined_events")
 
     def add_participant(self, session, user: "User"):
         """Add a participant to the event"""
@@ -79,3 +88,13 @@ class Event(AppBaseModel, table=True):
             session.delete(participant)
             session.commit()
         return participant
+
+    def get_cover_photo(self, session) -> Optional["Media"]:
+        usage = session.exec(
+            select(MediaUsage).where(
+                MediaUsage.owner_type == ContentOwnerType.EVENT,
+                MediaUsage.owner_id == self.id,
+                MediaUsage.usage_type == MediaUsageType.COVER_PHOTO,
+            )
+        ).first()
+        return usage.media if usage else None

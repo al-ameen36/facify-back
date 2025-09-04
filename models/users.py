@@ -67,6 +67,7 @@ class User(SQLModel, table=True):
 
     events: List["Event"] = Relationship(back_populates="created_by")
     uploads: List["Media"] = Relationship(back_populates="uploaded_by")
+    joined_events: List["Event"] = Relationship(back_populates="participants")
 
     # Media helper methods
     def get_profile_picture(self, session) -> Optional["Media"]:

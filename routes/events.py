@@ -1,4 +1,9 @@
+from datetime import timezone
+from datetime import datetime
+from typing import Optional
 from fastapi import Depends, APIRouter, HTTPException, Query
+from models.events import EventRead
+from models.media import Media, MediaUsage
 from sqlmodel import Session, func, select
 from models import (
     Event,
@@ -18,7 +23,7 @@ from db import get_session
 router = APIRouter(prefix="/events", tags=["event"])
 
 
-@router.post("", response_model=SingleItemResponse[Event])
+@router.post("", response_model=SingleItemResponse[EventRead])
 async def add_event(
     event_data: EventCreate,
     session: Session = Depends(get_session),
@@ -38,13 +43,68 @@ async def add_event(
             end_time=event_data.end_time,
             privacy=event_data.privacy,
         )
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     return SingleItemResponse[Event](message="Event created successfully", data=event)
 
 
-@router.get("/me", response_model=PaginatedResponse[Event])
+@router.get("", response_model=PaginatedResponse[EventRead])
+async def read_my_events_filtered(
+    status: Optional[str] = Query(
+        None, regex="^(past|upcoming)$", description="Filter events: past or upcoming"
+    ),
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1),
+):
+    now = datetime.now(timezone.utc)
+
+    # Base query: events created by user OR joined
+    query = (
+        select(Event)
+        .join(EventParticipant, Event.id == EventParticipant.event_id, isouter=True)
+        .where(
+            (Event.created_by_id == current_user.id)
+            | (EventParticipant.user_id == current_user.id)
+        )
+    )
+
+    # Apply status filter
+    if status == "past":
+        query = query.filter(Event.end_time < now)
+    elif status == "upcoming":
+        query = query.filter(Event.start_time >= now)
+
+    total = session.exec(select(func.count()).select_from(query.subquery())).one()
+    offset = (page - 1) * per_page
+
+    events = session.exec(
+        query.order_by(Event.start_time.desc()).offset(offset).limit(per_page)
+    ).all()
+
+    # Attach cover photo
+    events_with_media = []
+    for event in events:
+        cover_photo = event.get_cover_photo(session)
+        event_dict = event.dict()
+        event_dict["cover_photo"] = cover_photo.url if cover_photo else None
+        events_with_media.append(EventRead(**event_dict))
+
+    total_pages = ((total - 1) // per_page) + 1 if total else 0
+
+    return PaginatedResponse[EventRead](
+        message=f"User {status or 'all'} events retrieved successfully",
+        data=events_with_media,
+        pagination=Pagination(
+            total=total, page=page, per_page=per_page, total_pages=total_pages
+        ),
+    )
+
+
+@router.get("/me", response_model=PaginatedResponse[EventRead])
 async def read_my_events(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
@@ -53,6 +113,7 @@ async def read_my_events(
 ):
     total = session.exec(select(func.count(Event.id))).one()
     offset = (page - 1) * per_page
+
     my_events = session.exec(
         select(Event)
         .filter(Event.created_by_id == current_user.id)
@@ -61,11 +122,19 @@ async def read_my_events(
         .limit(per_page)
     ).all()
 
+    # Attach cover photo
+    events_with_media = []
+    for event in my_events:
+        cover_photo = event.get_cover_photo(session)
+        event_dict = event.dict()
+        event_dict["cover_photo"] = cover_photo.url if cover_photo else None
+        events_with_media.append(event_dict)
+
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
-    return PaginatedResponse[Event](
+    return PaginatedResponse[dict](
         message="User events retrieved successfully",
-        data=my_events,
+        data=events_with_media,
         pagination=Pagination(
             total=total, page=page, per_page=per_page, total_pages=total_pages
         ),
@@ -133,4 +202,23 @@ async def get_event_participants(
         pagination=Pagination(
             total=total, page=page, per_page=per_page, total_pages=total_pages
         ),
+    )
+
+
+@router.get("/{event_id}", response_model=SingleItemResponse[EventRead])
+async def get_single_event(
+    event_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    event = session.get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    cover_photo = event.get_cover_photo(session)
+    event_dict = event.dict()
+    event_dict["cover_photo"] = cover_photo.url if cover_photo else None
+
+    return SingleItemResponse[EventRead](
+        message="Event retrieved successfully", data=EventRead(**event_dict)
     )

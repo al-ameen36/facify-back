@@ -17,8 +17,6 @@ router = APIRouter(prefix="/media", tags=["media"])
 MEDIA_DIR = "static/media"
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
-router.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
-
 # Allowed MIME types
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 ALLOWED_VIDEO_TYPES = {"video/mp4", "video/avi", "video/mov", "video/mkv"}

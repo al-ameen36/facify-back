@@ -10,12 +10,14 @@ from routes.events import router as event_router
 from routes.media import router as media_router
 import os
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 
 load_dotenv()
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@email.com")
 DEFAULT_PASSWORD = os.getenv("ADMIN_PASSWORD", "password")
+MEDIA_DIR = "static/media"
 
 
 @asynccontextmanager
@@ -62,6 +64,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
+
 
 app.add_middleware(
     CORSMiddleware,
