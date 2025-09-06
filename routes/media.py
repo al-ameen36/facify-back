@@ -12,7 +12,7 @@ import mimetypes
 from moviepy import VideoFileClip
 
 
-router = APIRouter(prefix="/media", tags=["media"])
+router = APIRouter(prefix="/uploads", tags=["media"])
 
 MEDIA_DIR = "static/media"
 os.makedirs(MEDIA_DIR, exist_ok=True)

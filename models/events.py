@@ -33,6 +33,17 @@ class EventRead(EventBase):
     created_by_id: int
     created_at: datetime
     cover_photo: Optional[str] = None
+    secret: Optional[str] = None
+
+
+class ParticipantRead(SQLModel):
+    id: int
+    full_name: str
+    username: str
+    photo: Optional[str] = None
+    email: str
+    status: str
+    created_at: datetime
 
 
 class EventCreate(EventBase):
@@ -44,11 +55,12 @@ class JoinEventRequest(SQLModel):
 
 
 # Models
-class EventParticipant(SQLModel, table=True):
+class EventParticipant(AppBaseModel, table=True):
     """Junction table for many-to-many relationship between events and users"""
 
     event_id: int = Field(foreign_key="event.id", primary_key=True)
     user_id: int = Field(foreign_key="user.id", primary_key=True)
+    status: str = Field(default="pending")
 
 
 class Event(AppBaseModel, table=True):
