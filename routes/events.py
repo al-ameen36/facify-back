@@ -3,7 +3,6 @@ from datetime import datetime
 from typing import Optional
 from fastapi import Depends, APIRouter, HTTPException, Query, Body
 from models.events import EventRead, ParticipantRead
-from models.media import Media, MediaUsage
 from sqlmodel import Session, func, select, SQLModel
 from models import (
     Event,
@@ -15,7 +14,12 @@ from models import (
     Pagination,
     EventParticipant,
 )
-from utils.events import create_event, get_event_by_name, get_event_by_name
+from utils.events import (
+    create_event,
+    update_event,
+    get_event_by_name,
+    get_event_by_name,
+)
 from utils.users import get_current_user
 from db import get_session
 
@@ -32,8 +36,7 @@ async def add_event(
         raise HTTPException(status_code=400, detail="Event already exists")
 
     try:
-        event = create_event(
-            session=session,
+        event = EventCreate(
             created_by_id=current_user.id,
             name=event_data.name,
             location=event_data.location,
@@ -42,11 +45,34 @@ async def add_event(
             end_time=event_data.end_time,
             privacy=event_data.privacy,
         )
+        event = create_event(session=session, event=event)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     return SingleItemResponse[Event](message="Event created successfully", data=event)
+
+
+@router.patch("", response_model=SingleItemResponse[EventRead])
+async def update_event_route(
+    event_data: EventCreate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    event = get_event_by_name(session, event_data.name)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    if event.created_by_id != current_user.id:
+        raise HTTPException(status_code=401, detail="Not authorized")
+
+    try:
+        event = update_event(session=session, event=event)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return SingleItemResponse[Event](message="Event updated successfully", data=event)
 
 
 @router.get("", response_model=PaginatedResponse[EventRead])

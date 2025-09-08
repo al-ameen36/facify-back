@@ -1,10 +1,11 @@
 from datetime import datetime
 from models.media import MediaUsage
-from sqlmodel import SQLModel, Field, Relationship, select
+from sqlmodel import SQLModel, Field, Relationship, select, Column, String
 from typing import List, Optional
 from models.core import AppBaseModel, ContentOwnerType, MediaUsageType
 import random
 import string
+from enum import Enum
 
 
 def generate_event_secret() -> str:
@@ -24,6 +25,9 @@ class EventBase(SQLModel):
     description: str
     start_time: datetime
     end_time: datetime
+    privacy: str
+    allow_contributions: Optional[bool] = True
+    auto_approve_uploads: Optional[bool] = True
     privacy: str
 
 
@@ -73,33 +77,14 @@ class Event(AppBaseModel, table=True):
     privacy: str
     secret: Optional[str] = Field(default_factory=generate_event_secret)
     cover_photo: Optional[str] = None
+    allow_contributions: Optional[bool] = True
+    auto_approve_uploads: Optional[bool] = True
+    privacy: Optional[str] = "private"
 
     # Relationships
     created_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
     created_by: Optional["User"] = Relationship(back_populates="events")
     participants: List["User"] = Relationship(back_populates="joined_events")
-
-    def add_participant(self, session, user: "User"):
-        """Add a participant to the event"""
-        participant = EventParticipant(event_id=self.id, user_id=user.id)
-        session.add(participant)
-        session.commit()
-        return participant
-
-    def remove_participant(self, session, user: "User"):
-        """Remove a participant from the event"""
-        participant = (
-            session.query(EventParticipant)
-            .filter(
-                EventParticipant.event_id == self.id,
-                EventParticipant.user_id == user.id,
-            )
-            .first()
-        )
-        if participant:
-            session.delete(participant)
-            session.commit()
-        return participant
 
     def get_cover_photo(self, session) -> Optional["Media"]:
         usage = session.exec(
