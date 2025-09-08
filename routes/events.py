@@ -231,10 +231,15 @@ async def get_single_event(
     # Add host info
     host = session.get(User, event.created_by_id)
     if host:
+        photo = host.get_profile_picture(session)
+        if photo:
+            host.profile_picture = photo.url
+
         event_dict["created_by"] = {
             "id": host.id,
             "username": host.username,
             "email": host.email,
+            "photo": photo,
         }
     else:
         event_dict["created_by"] = None
