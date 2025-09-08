@@ -67,7 +67,7 @@ async def update_event_route(
         raise HTTPException(status_code=401, detail="Not authorized")
 
     try:
-        event = update_event(session=session, event=event)
+        event = update_event(session=session, event=event, update_data=event_data)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

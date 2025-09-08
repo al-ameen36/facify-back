@@ -2,7 +2,6 @@ from typing import Optional
 from sqlmodel import Session, select
 from dotenv import load_dotenv
 from models import Event, EventCreate
-from fastapi import HTTPException
 
 load_dotenv()
 
@@ -19,13 +18,10 @@ def create_event(session: Session, event: EventCreate) -> Event:
     return event
 
 
-def update_event(session: Session, event: Event) -> Event:
-    skip = ["id", "created_at", "updated_at", "created_by_id", "secret"]
-    for field, value in event.model_dump(exclude_unset=True).items():
-        if field not in skip:
-            setattr(event, field, value)
+def update_event(session: Session, event: Event, update_data: EventCreate) -> Event:
+    for field, value in update_data.model_dump(exclude_unset=True).items():
+        setattr(event, field, value)
 
-    # Commit the changes
     session.add(event)
     session.commit()
     session.refresh(event)
