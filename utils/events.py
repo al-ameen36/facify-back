@@ -20,8 +20,10 @@ def create_event(session: Session, event: EventCreate) -> Event:
 
 
 def update_event(session: Session, event: Event) -> Event:
+    skip = ["id", "created_at", "updated_at", "created_by_id", "secret"]
     for field, value in event.model_dump(exclude_unset=True).items():
-        setattr(event, field, value)
+        if field not in skip:
+            setattr(event, field, value)
 
     # Commit the changes
     session.add(event)
