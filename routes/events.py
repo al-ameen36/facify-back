@@ -214,41 +214,6 @@ async def get_event_participants(
     }
 
 
-@router.get("/{event_id}", response_model=SingleItemResponse[EventRead])
-async def get_single_event(
-    event_id: int,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
-):
-    event = session.get(Event, event_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    cover_photo = event.get_cover_photo(session)
-    event_dict = event.dict()
-    event_dict["cover_photo"] = cover_photo.url if cover_photo else None
-
-    # Add host info
-    host = session.get(User, event.created_by_id)
-    if host:
-        photo = host.get_profile_picture(session)
-        if photo:
-            host.profile_picture = photo.url
-
-        event_dict["created_by"] = {
-            "id": host.id,
-            "username": host.username,
-            "email": host.email,
-            "photo": photo,
-        }
-    else:
-        event_dict["created_by"] = None
-
-    return SingleItemResponse[EventRead](
-        message="Event retrieved successfully", data=event_dict
-    )
-
-
 @router.get("/me", response_model=PaginatedResponse[EventRead])
 async def read_my_events(
     current_user: User = Depends(get_current_user),
@@ -283,6 +248,41 @@ async def read_my_events(
         pagination=Pagination(
             total=total, page=page, per_page=per_page, total_pages=total_pages
         ),
+    )
+
+
+@router.get("/{event_id}", response_model=SingleItemResponse[EventRead])
+async def get_single_event(
+    event_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    event = session.get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    cover_photo = event.get_cover_photo(session)
+    event_dict = event.dict()
+    event_dict["cover_photo"] = cover_photo.url if cover_photo else None
+
+    # Add host info
+    host = session.get(User, event.created_by_id)
+    if host:
+        photo = host.get_profile_picture(session)
+        if photo:
+            host.profile_picture = photo.url
+
+        event_dict["created_by"] = {
+            "id": host.id,
+            "username": host.username,
+            "email": host.email,
+            "photo": photo,
+        }
+    else:
+        event_dict["created_by"] = None
+
+    return SingleItemResponse[EventRead](
+        message="Event retrieved successfully", data=event_dict
     )
 
 

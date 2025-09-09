@@ -2,6 +2,7 @@ from typing import Annotated
 from datetime import timedelta
 from fastapi import BackgroundTasks, Depends, APIRouter, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
+from models.core import SingleItemResponse
 from sqlmodel import Session, select
 from models import (
     Token,
@@ -34,7 +35,7 @@ router = APIRouter(prefix="/user", tags=["user"])
 from utils.users import send_verification_email
 
 
-@router.post("/register", response_model=UserRead)
+@router.post("/register", response_model=SingleItemResponse[UserRead])
 async def register_user(
     user_data: UserCreate,
     background_tasks: BackgroundTasks,
@@ -57,7 +58,9 @@ async def register_user(
     token = create_access_token(user.username, expires_delta=timedelta(minutes=30))
     background_tasks.add_task(send_verification_email, user.email, token)
 
-    return user
+    return SingleItemResponse(
+        data=UserRead.model_validate(user), message="User registered successfully"
+    )
 
 
 @router.get("/verify-email")
