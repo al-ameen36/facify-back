@@ -95,7 +95,7 @@ async def login_for_access_token(
 
     profile_picture = user.get_profile_picture(session)
     user = UserRead.model_validate(user)
-    user.profile_picture = profile_picture
+    user.profile_picture = profile_picture.url
 
     return Token(
         access_token=access_token,
