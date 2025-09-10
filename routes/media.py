@@ -51,6 +51,42 @@ async def upload_media(
     else:
         raise HTTPException(status_code=400, detail="Invalid owner_type")
 
+    # Delete existing media for specific usage types that should be unique
+    unique_usage_types = ["profile_picture", "cover_photo"]
+    if usage_type in unique_usage_types:
+        # Find existing media usage for this owner and usage type
+        existing_usage = (
+            session.query(MediaUsage)
+            .filter(
+                MediaUsage.owner_id == owner_id,
+                MediaUsage.owner_type == owner_type,
+                MediaUsage.usage_type == usage_type,
+            )
+            .first()
+        )
+
+        if existing_usage:
+            # Get the associated media
+            existing_media = session.get(Media, existing_usage.media_id)
+
+            if existing_media:
+                # Delete the physical file
+                old_file_path = os.path.join(MEDIA_DIR, existing_media.filename)
+                try:
+                    if os.path.exists(old_file_path):
+                        os.remove(old_file_path)
+                except Exception as e:
+                    # Log the error but continue - don't fail the upload if file deletion fails
+                    print(f"Warning: Failed to delete old file {old_file_path}: {e}")
+
+                # Delete the media usage record
+                session.delete(existing_usage)
+
+                # Delete the media record
+                session.delete(existing_media)
+
+                session.commit()
+
     # Save file to disk
     file_ext = os.path.splitext(file.filename)[1].lower()
     safe_filename = f"{owner_type}_{owner_id}_{os.urandom(8).hex()}{file_ext}"
