@@ -2,6 +2,8 @@ from pydantic import EmailStr
 from sqlmodel import SQLModel, Field, Relationship, Column, String
 from typing import Optional, List
 from models.media import ContentOwnerType, MediaUsage, MediaUsageType
+from pgvector.sqlalchemy import Vector
+from pydantic import BaseModel, field_serializer
 
 
 # Types (Pydantic models for API)
@@ -58,6 +60,29 @@ class ResetPasswordRequest(SQLModel):
 
 
 # Database Models
+class FaceEmbedding(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True, unique=True)
+
+    # Main embedding vector
+    embedding: List[float] = Field(sa_column=Column(Vector(4096)))
+
+    # Metadata
+    model_name: str = Field(default="VGG-Face")
+    confidence_score: float
+
+    # Relations
+    user: "User" = Relationship(back_populates="face_embedding")
+
+    def set_embedding(self, embedding_list: List[float]):
+        """Store embedding as JSON string"""
+        self.embedding = embedding_list
+
+    def get_embedding(self) -> List[float]:
+        """Retrieve embedding as list"""
+        return self.embedding
+
+
 class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(sa_column=Column(String, unique=True, index=True))
@@ -65,6 +90,7 @@ class User(SQLModel, table=True):
     full_name: str
     hashed_password: str
 
+    face_embedding: "FaceEmbedding" = Relationship(back_populates="user")
     events: List["Event"] = Relationship(back_populates="created_by")
     uploads: List["Media"] = Relationship(back_populates="uploaded_by")
     joined_events: List["Event"] = Relationship(back_populates="participants")

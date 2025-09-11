@@ -34,6 +34,10 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
+def get_user_by_id(session: Session, user_id: int) -> Optional[User]:
+    return session.exec(select(User).where(User.id == user_id)).first()
+
+
 def get_user_by_username(session: Session, username: str) -> Optional[User]:
     return session.exec(select(User).where(User.username == username)).first()
 

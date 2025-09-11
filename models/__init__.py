@@ -1,5 +1,6 @@
 from .users import (
     User,
+    FaceEmbedding,
     UserCreate,
     UserRead,
     Token,
@@ -19,6 +20,7 @@ PaginatedResponse.model_rebuild()
 Pagination.model_rebuild()
 
 User.model_rebuild()
+FaceEmbedding.model_rebuild()
 Token.model_rebuild()
 UserRead.model_rebuild()
 UserCreate.model_rebuild()
@@ -44,6 +46,7 @@ __all__ = [
     "Pagination",
     # Users
     "User",
+    "FaceEmbedding",
     "Token",
     "UserRead",
     "UserCreate",
