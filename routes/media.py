@@ -10,11 +10,14 @@ from utils.users import get_current_user
 from typing import Optional
 import mimetypes
 from moviepy import VideoFileClip
+from dotenv import load_dotenv
 
+
+load_dotenv()
 
 router = APIRouter(prefix="/uploads", tags=["media"])
 
-MEDIA_DIR = "static/media"
+MEDIA_DIR = os.environ.get("MEDIA_DIR")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # Allowed MIME types

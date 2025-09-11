@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from routes.users import router as auth_router
 from routes.events import router as event_router
 from routes.media import router as media_router
+from routes.face import router as face_router
 import os
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +18,7 @@ load_dotenv()
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@email.com")
 DEFAULT_PASSWORD = os.getenv("ADMIN_PASSWORD", "password")
-MEDIA_DIR = "static/media"
+MEDIA_DIR = os.environ.get("MEDIA_DIR")
 
 
 @asynccontextmanager
@@ -80,6 +81,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(event_router)
 app.include_router(media_router)
+app.include_router(face_router)
 
 
 @app.get("/")
