@@ -9,6 +9,8 @@ from utils.users import get_user_by_id
 
 load_dotenv()
 FACE_API_URL = os.environ.get("FACE_API_URL")
+FACE_MODEL_NAME = os.environ.get("FACE_MODEL_NAME")
+FACE_MODEL_BACKEND = os.environ.get("FACE_MODEL_BACKEND")
 
 router = APIRouter(prefix="/face", tags=["face"])
 
@@ -37,8 +39,8 @@ async def embed_face(
 
         face_embedding = FaceEmbedding(
             user_id=user_id,
-            model_name="Facenet",
-            detector_backend="retinaface",
+            model_name=FACE_MODEL_NAME,
+            detector_backend=FACE_MODEL_BACKEND,
             image_path=temp_path,
             confidence_score=confidence_score,
         )
@@ -49,9 +51,10 @@ async def embed_face(
         session.refresh(face_embedding)
 
         return {
-            "success": True,
+            "message": "success",
             "embedding_id": face_embedding.id,
             "embedding_length": len(embedding),
+            "model_name": FACE_MODEL_NAME,
             "user_id": user_id,
         }
 
