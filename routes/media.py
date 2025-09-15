@@ -59,7 +59,7 @@ async def upload_media(
     if usage_type in unique_usage_types:
         # Find existing media usage for this owner and usage type
         existing_usage = (
-            session.query(MediaUsage)
+            session.exec(MediaUsage)
             .filter(
                 MediaUsage.owner_id == owner_id,
                 MediaUsage.owner_type == owner_type,

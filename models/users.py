@@ -69,7 +69,6 @@ class FaceEmbedding(SQLModel, table=True):
 
     # Metadata
     model_name: str = Field(default="VGG-Face")
-    confidence_score: float
 
     # Relations
     user: "User" = Relationship(back_populates="face_embedding")

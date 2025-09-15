@@ -5,14 +5,14 @@ from models import User
 from utils.users import get_password_hash
 from sqlmodel import select
 from dotenv import load_dotenv
-from routes.users import router as auth_router
-from routes.events import router as event_router
-from routes.media import router as media_router
-from routes.face import router as face_router
 import os
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from routes.users import router as auth_router
+from routes.events import router as event_router
+from routes.media import router as media_router
+from routes.face import router as face_router
 
 load_dotenv()
 
