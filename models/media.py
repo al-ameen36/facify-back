@@ -28,6 +28,7 @@ class Media(AppBaseModel, table=True):
     file_size: Optional[int] = None
     mime_type: Optional[str] = None
     duration: Optional[float] = None
+    external_id: str
 
     # Relationships
     uploaded_by_id: Optional[int] = Field(default=None, foreign_key="user.id")

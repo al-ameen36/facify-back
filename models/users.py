@@ -1,9 +1,9 @@
 from pydantic import EmailStr
-from sqlmodel import SQLModel, Field, Relationship, Column, String
+from sqlmodel import SQLModel, Field, Relationship, Column, String, Boolean
 from typing import Optional, List
 from models.media import ContentOwnerType, MediaUsage, MediaUsageType
 from pgvector.sqlalchemy import Vector
-from pydantic import BaseModel, field_serializer
+from datetime import datetime
 
 
 # Types (Pydantic models for API)
@@ -20,6 +20,7 @@ class UserCreate(UserBase):
 class UserRead(UserBase):
     id: int
     profile_picture: Optional["Media"] = None
+    is_drive_connected: Optional[bool] = False
 
     num_joined: int = 0
     num_hosted: int = 0
@@ -93,6 +94,14 @@ class User(SQLModel, table=True):
     events: List["Event"] = Relationship(back_populates="created_by")
     uploads: List["Media"] = Relationship(back_populates="uploaded_by")
     joined_events: List["Event"] = Relationship(back_populates="participants")
+
+    # Google OAuth tokens
+    is_drive_connected: bool = Field(
+        default=False, sa_column=Column(Boolean, default=False, nullable=False)
+    )
+    drive_access_token: Optional[str] = None
+    drive_refresh_token: Optional[str] = None
+    drive_token_expiry: Optional[datetime] = None
 
     # Media helper methods
     def get_profile_picture(self, session) -> Optional["Media"]:

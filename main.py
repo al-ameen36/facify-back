@@ -13,6 +13,7 @@ from routes.users import router as auth_router
 from routes.events import router as event_router
 from routes.media import router as media_router
 from routes.face import router as face_router
+from routes.drive import router as drive_router
 
 load_dotenv()
 
@@ -43,9 +44,9 @@ async def lifespan(app: FastAPI):
             is_active=True,
         )
         test_user = User(
-            email="user@email.com",
-            username="user",
-            full_name="user",
+            email="muhdabdullahi361@gmail.com",
+            username="maa",
+            full_name="Muhammad Al-Ameen Abdullahi",
             hashed_password=hashed_password,
             is_admin=False,
             is_active=True,
@@ -82,6 +83,7 @@ app.include_router(auth_router)
 app.include_router(event_router)
 app.include_router(media_router)
 app.include_router(face_router)
+app.include_router(drive_router)
 
 
 @app.get("/")

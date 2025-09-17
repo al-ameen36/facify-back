@@ -1,6 +1,5 @@
 import os
 from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException
-from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, func, select
 from db import get_session
 from models import User, Event, Media, SingleItemResponse
@@ -8,10 +7,10 @@ from models.core import ContentOwnerType, MediaUsageType, PaginatedResponse, Pag
 from models.media import MediaUsage
 from utils.users import get_current_user
 from typing import Optional
-import mimetypes
-from moviepy import VideoFileClip
 from dotenv import load_dotenv
-
+from googleapiclient.http import MediaIoBaseUpload
+import io
+from utils.media import get_drive_service
 
 load_dotenv()
 
@@ -34,15 +33,11 @@ async def upload_media(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    # Validate usage_type
+    # validate owner_type & usage_type (same as before)
     supported_usage_types = [item.value for item in MediaUsageType]
     if usage_type not in supported_usage_types:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported usage_type. Supported types: {supported_usage_types}",
-        )
+        raise HTTPException(status_code=400, detail="Unsupported usage_type")
 
-    # Validate owner_type
     if owner_type == "user":
         owner = session.get(User, owner_id)
         if not owner:
@@ -54,82 +49,44 @@ async def upload_media(
     else:
         raise HTTPException(status_code=400, detail="Invalid owner_type")
 
-    # Delete existing media for specific usage types that should be unique
-    unique_usage_types = ["profile_picture", "cover_photo"]
-    if usage_type in unique_usage_types:
-        # Find existing media usage for this owner and usage type
-        existing_usage = session.exec(
-            select(MediaUsage).where(
-                MediaUsage.owner_id == owner_id,
-                MediaUsage.owner_type == owner_type,
-                MediaUsage.usage_type == usage_type,
-            )
-        ).first()
+    # --- UPLOAD TO GOOGLE DRIVE ---
+    drive_service = get_drive_service(current_user)
 
-        if existing_usage:
-            # Get the associated media
-            existing_media = session.get(Media, existing_usage.media_id)
+    file_stream = io.BytesIO(await file.read())
+    media_body = MediaIoBaseUpload(
+        file_stream, mimetype=file.content_type, resumable=True
+    )
 
-            if existing_media:
-                # Delete the physical file
-                old_file_path = os.path.join(MEDIA_DIR, existing_media.filename)
-                try:
-                    if os.path.exists(old_file_path):
-                        os.remove(old_file_path)
-                except Exception as e:
-                    # Log the error but continue - don't fail the upload if file deletion fails
-                    print(f"Warning: Failed to delete old file {old_file_path}: {e}")
+    uploaded_file = (
+        drive_service.files()
+        .create(
+            body={"name": file.filename, "parents": ["root"]},  # or a folder ID
+            media_body=media_body,
+            fields="id, webViewLink, mimeType, size",
+        )
+        .execute()
+    )
 
-                # Delete the media usage record
-                session.delete(existing_usage)
+    file_id = uploaded_file.get("id")
+    file_url = uploaded_file.get("webViewLink")
+    file_size = int(uploaded_file.get("size", 0))
+    mime_type = uploaded_file.get("mimeType")
 
-                # Delete the media record
-                session.delete(existing_media)
-
-                session.commit()
-
-    # Save file to disk
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    safe_filename = f"{owner_type}_{owner_id}_{os.urandom(8).hex()}{file_ext}"
-    file_path = os.path.join(MEDIA_DIR, safe_filename)
-
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-
-    # Derive metadata
-    mime_type, _ = mimetypes.guess_type(file_path)
-    if not mime_type:
-        mime_type = file.content_type or "application/octet-stream"
-
-    file_size = os.path.getsize(file_path)
-    duration = None
-
-    # If video, extract duration
-    if mime_type.startswith("video/"):
-        try:
-            with VideoFileClip(file_path) as clip:
-                duration = clip.duration
-        except Exception:
-            duration = None
-
-    # Create a URL
-    file_url = f"/media/{safe_filename}"
-
-    # Save Media
+    # --- Save to DB (Media + MediaUsage) ---
     media = Media(
         url=file_url,
-        filename=safe_filename,
+        filename=file.filename,
         original_filename=file.filename,
         file_size=file_size,
         mime_type=mime_type,
-        duration=duration,
+        duration=None,
         uploaded_by_id=current_user.id,
+        external_id=file_id,
     )
     session.add(media)
     session.commit()
     session.refresh(media)
 
-    # Save MediaUsage
     usage = MediaUsage(
         content_type=owner_type,
         owner_id=owner_id,
@@ -142,7 +99,7 @@ async def upload_media(
     session.commit()
     session.refresh(media)
 
-    return SingleItemResponse(data=media, message="Media uploaded successfully")
+    return SingleItemResponse(data=media, message="Media uploaded to Google Drive")
 
 
 @router.get("/me", response_model=PaginatedResponse[Media])
