@@ -58,15 +58,13 @@ async def upload_media(
     unique_usage_types = ["profile_picture", "cover_photo"]
     if usage_type in unique_usage_types:
         # Find existing media usage for this owner and usage type
-        existing_usage = (
-            session.exec(MediaUsage)
-            .filter(
+        existing_usage = session.exec(
+            select(MediaUsage).where(
                 MediaUsage.owner_id == owner_id,
                 MediaUsage.owner_type == owner_type,
                 MediaUsage.usage_type == usage_type,
             )
-            .first()
-        )
+        ).first()
 
         if existing_usage:
             # Get the associated media

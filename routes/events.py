@@ -7,6 +7,7 @@ from sqlmodel import Session, func, select, SQLModel
 from models import (
     Event,
     EventCreate,
+    EventCreateDB,
     User,
     PaginatedResponse,
     SingleItemResponse,
@@ -35,8 +36,9 @@ async def add_event(
     if get_event_by_name(session, event_data.name):
         raise HTTPException(status_code=400, detail="Event already exists")
 
+    print(current_user.id)
     try:
-        event = EventCreate(
+        event = EventCreateDB(
             created_by_id=current_user.id,
             name=event_data.name,
             location=event_data.location,
@@ -67,12 +69,19 @@ async def update_event_route(
         raise HTTPException(status_code=401, detail="Not authorized")
 
     try:
-        event = update_event(session=session, event=event, update_data=event_data)
+        event = update_event(
+            session=session,
+            event=event,
+            update_data=event_data,
+            created_by_id=event.created_by_id,
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return SingleItemResponse[Event](message="Event updated successfully", data=event)
+    return SingleItemResponse[EventRead](
+        message="Event updated successfully", data=event
+    )
 
 
 @router.get("", response_model=PaginatedResponse[EventRead])
@@ -114,7 +123,7 @@ async def read_my_events_filtered(
     events_with_media = []
     for event in events:
         cover_photo = event.get_cover_photo(session)
-        event_dict = event.dict()
+        event_dict = event.model_dump()
         event_dict["cover_photo"] = cover_photo.url if cover_photo else None
         events_with_media.append(EventRead(**event_dict))
 
@@ -236,7 +245,7 @@ async def read_my_events(
     events_with_media = []
     for event in my_events:
         cover_photo = event.get_cover_photo(session)
-        event_dict = event.dict()
+        event_dict = event.model_dump()
         event_dict["cover_photo"] = cover_photo.url if cover_photo else None
         events_with_media.append(event_dict)
 
@@ -262,21 +271,21 @@ async def get_single_event(
         raise HTTPException(status_code=404, detail="Event not found")
 
     cover_photo = event.get_cover_photo(session)
-    event_dict = event.dict()
+    event_dict = event.model_dump()
     event_dict["cover_photo"] = cover_photo.url if cover_photo else None
 
     # Add host info
     host = session.get(User, event.created_by_id)
     if host:
         photo = host.get_profile_picture(session)
-        if photo:
-            host.profile_picture = photo.url
+        # if photo:
+        # host.profile_picture = photo.url
 
         event_dict["created_by"] = {
             "id": host.id,
             "username": host.username,
             "email": host.email,
-            "photo": photo,
+            "photo": photo.url if photo else None,
         }
     else:
         event_dict["created_by"] = None

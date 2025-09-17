@@ -33,11 +33,19 @@ class EventBase(SQLModel):
 
 class EventRead(EventBase):
     id: int
-    updated_at: datetime
     created_by_id: int
+    updated_at: datetime
     created_at: datetime
     cover_photo: Optional[str] = None
     secret: Optional[str] = None
+
+
+class EventCreate(EventBase):
+    pass
+
+
+class EventCreateDB(EventBase):
+    created_by_id: int
 
 
 class ParticipantRead(SQLModel):
@@ -48,10 +56,6 @@ class ParticipantRead(SQLModel):
     email: str
     status: str
     created_at: datetime
-
-
-class EventCreate(EventBase):
-    pass
 
 
 class JoinEventRequest(SQLModel):

@@ -57,7 +57,7 @@ def save_media_file(session: Session, file: UploadFile, user_id: int) -> Media:
         uploaded_by_id=user_id,
     )
     session.add(media)
-    session.flush()  # assign media.id
+    session.flush()
 
     usage = MediaUsage(
         owner_id=user_id,
