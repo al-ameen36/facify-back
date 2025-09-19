@@ -2,7 +2,6 @@ from pydantic import EmailStr
 from sqlmodel import SQLModel, Field, Relationship, Column, String, Boolean
 from typing import Optional, List
 from models.media import ContentOwnerType, MediaUsage, MediaUsageType
-from pgvector.sqlalchemy import Vector
 from datetime import datetime
 
 
@@ -19,7 +18,7 @@ class UserCreate(UserBase):
 
 class UserRead(UserBase):
     id: int
-    profile_picture: Optional["Media"] = None
+    profile_picture: Optional[str] = None
     is_drive_connected: Optional[bool] = False
 
     num_joined: int = 0
@@ -61,28 +60,6 @@ class ResetPasswordRequest(SQLModel):
 
 
 # Database Models
-class FaceEmbedding(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="user.id", index=True, unique=True)
-
-    # Main embedding vector
-    embedding: List[float] = Field(sa_column=Column(Vector(4096)))
-
-    # Metadata
-    model_name: str = Field(default="VGG-Face")
-
-    # Relations
-    user: "User" = Relationship(back_populates="face_embedding")
-
-    def set_embedding(self, embedding_list: List[float]):
-        """Store embedding as JSON string"""
-        self.embedding = embedding_list
-
-    def get_embedding(self) -> List[float]:
-        """Retrieve embedding as list"""
-        return self.embedding
-
-
 class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(sa_column=Column(String, unique=True, index=True))
@@ -90,7 +67,9 @@ class User(SQLModel, table=True):
     full_name: str
     hashed_password: str
 
-    face_embedding: "FaceEmbedding" = Relationship(back_populates="user")
+    # One-to-one: user → face embedding
+    face_embedding: Optional["MediaEmbedding"] = Relationship(back_populates="user")
+
     events: List["Event"] = Relationship(back_populates="created_by")
     uploads: List["Media"] = Relationship(back_populates="uploaded_by")
     joined_events: List["Event"] = Relationship(back_populates="participants")
@@ -104,48 +83,85 @@ class User(SQLModel, table=True):
     drive_token_expiry: Optional[datetime] = None
 
     # Media helper methods
-    def get_profile_picture(self, session) -> Optional["Media"]:
-        """Get current profile picture"""
-        usage = (
-            session.query(MediaUsage)
-            .filter(
+    def get_profile_picture_media(self, session) -> Optional["Media"]:
+        """Get current profile picture Media object"""
+        from sqlmodel import select
+        usage = session.exec(
+            select(MediaUsage).where(
                 MediaUsage.owner_type == ContentOwnerType.USER,
                 MediaUsage.owner_id == self.id,
                 MediaUsage.usage_type == MediaUsageType.PROFILE_PICTURE,
             )
-            .first()
-        )
+        ).first()
         return usage.media if usage else None
+
+    def get_profile_picture_base64(self, session, drive_service=None) -> Optional[str]:
+        """Get profile picture as base64 string for frontend"""
+        media = self.get_profile_picture_media(session)
+        if not media or not media.external_id:
+            return None
+
+        try:
+            if not drive_service:
+                from utils.drive import get_drive_service
+                drive_service = get_drive_service(self)
+
+            from googleapiclient.http import MediaIoBaseDownload
+            import io
+            import base64
+
+            request = drive_service.files().get_media(fileId=media.external_id)
+            file_stream = io.BytesIO()
+            downloader = MediaIoBaseDownload(file_stream, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+
+            file_stream.seek(0)
+            encoded = base64.b64encode(file_stream.read()).decode()
+            return f"data:{media.mime_type};base64,{encoded}"
+        except Exception:
+            # Fail gracefully
+            return None
 
     def get_my_uploads(self, session) -> List["Media"]:
         """Get all my uploads"""
-        usages = (
-            session.query(MediaUsage)
-            .filter(
-                MediaUsage.content_type == ContentOwnerType.USER,
-                MediaUsage.object_id == self.id,
+        from sqlmodel import select
+        usages = session.exec(
+            select(MediaUsage).where(
+                MediaUsage.owner_type == ContentOwnerType.USER,
+                MediaUsage.owner_id == self.id,
                 MediaUsage.usage_type == MediaUsageType.GALLERY,
-                MediaUsage.is_active == True,
             )
-            .all()
-        )
+        ).all()
         return [usage.media for usage in usages if usage.media]
 
     def set_profile_picture(self, session, media: "Media"):
         """Set a new profile picture"""
-
-        usage = (
-            session.query(MediaUsage)
-            .filter(
-                MediaUsage.content_type == ContentOwnerType.USER,
-                MediaUsage.object_id == self.id,
+        from sqlmodel import select
+        
+        # Find existing profile picture usage
+        usage = session.exec(
+            select(MediaUsage).where(
+                MediaUsage.owner_type == ContentOwnerType.USER,
+                MediaUsage.owner_id == self.id,
                 MediaUsage.usage_type == MediaUsageType.PROFILE_PICTURE,
-                MediaUsage.is_active == True,
             )
-            .first()
-        )
+        ).first()
 
-        usage.media = media
+        if usage:
+            # Update existing usage
+            usage.media_id = media.id
+        else:
+            # Create new usage
+            usage = MediaUsage(
+                owner_type=ContentOwnerType.USER,
+                owner_id=self.id,
+                usage_type=MediaUsageType.PROFILE_PICTURE,
+                media_type="image",
+                media_id=media.id,
+            )
+            session.add(usage)
 
         session.commit()
         return usage

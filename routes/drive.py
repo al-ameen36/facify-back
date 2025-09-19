@@ -4,6 +4,7 @@ from sqlmodel import Session
 from db import get_session
 from models import User, UserRead
 from utils.users import get_current_user
+from utils.drive import setup_user_drive_structure
 import os
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -15,8 +16,7 @@ router = APIRouter(prefix="/drive", tags=["drive"])
 CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
-
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+SCOPES = [os.environ.get("SCOPES")]
 
 
 @router.get("/connect")
@@ -68,6 +68,8 @@ async def drive_callback(
     session.add(current_user)
     session.commit()
     session.refresh(current_user)
+
+    setup_user_drive_structure(current_user)
 
     return {
         "message": "Google Drive connected successfully",

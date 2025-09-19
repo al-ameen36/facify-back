@@ -1,6 +1,5 @@
 from .users import (
     User,
-    FaceEmbedding,
     UserCreate,
     UserRead,
     Token,
@@ -16,7 +15,7 @@ from .events import (
     EventCreateDB,
 )
 from .core import AppBaseModel, Pagination, SingleItemResponse, PaginatedResponse
-from .media import ContentOwnerType, Media, MediaUsage, MediaUsageType
+from .media import ContentOwnerType, Media, MediaUsage, MediaUsageType, MediaEmbedding,MediaRead
 
 
 # Rebuild models to resolve forward references
@@ -26,7 +25,6 @@ PaginatedResponse.model_rebuild()
 Pagination.model_rebuild()
 
 User.model_rebuild()
-FaceEmbedding.model_rebuild()
 Token.model_rebuild()
 UserRead.model_rebuild()
 UserCreate.model_rebuild()
@@ -42,6 +40,8 @@ EventParticipant.model_rebuild()
 
 Media.model_rebuild()
 MediaUsage.model_rebuild()
+MediaEmbedding.model_rebuild()
+MediaRead.model_rebuild()
 
 
 # Export models
@@ -53,7 +53,6 @@ __all__ = [
     "Pagination",
     # Users
     "User",
-    "FaceEmbedding",
     "Token",
     "UserRead",
     "UserCreate",
@@ -63,11 +62,13 @@ __all__ = [
     # Events
     "Event",
     "EventCreate",
-    EventCreateDB,
+    "EventCreateDB",
     "JoinEventRequest",
     "EventParticipant",
     # Media
     "Media",
+    "MediaRead",
+    "MediaEmbedding",
     "MediaUsage",
     "MediaUsageType",
     "ContentOwnerType",

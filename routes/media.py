@@ -1,27 +1,51 @@
 import os
+import tempfile
 from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException
+from fastapi.responses import StreamingResponse
+import io
 from sqlmodel import Session, func, select
 from db import get_session
-from models import User, Event, Media, SingleItemResponse
-from models.core import ContentOwnerType, MediaUsageType, PaginatedResponse, Pagination
-from models.media import MediaUsage
+from models import (
+    User,
+    Media,
+    MediaRead,
+    MediaUsage,
+    Event,
+    ContentOwnerType,
+    MediaUsageType,
+    PaginatedResponse,
+    Pagination,
+    SingleItemResponse,
+)
 from utils.users import get_current_user
 from typing import Optional
 from dotenv import load_dotenv
-from googleapiclient.http import MediaIoBaseUpload
-import io
-from utils.media import get_drive_service
+from utils.face import (
+    delete_media_and_file,
+    delete_old_face_enrollment,
+    generate_face_embeddings,
+    save_media_file,
+    get_drive_service,
+)
+from models import MediaEmbedding
+from googleapiclient.http import MediaIoBaseDownload
+
 
 load_dotenv()
 
-router = APIRouter(prefix="/uploads", tags=["media"])
 
 MEDIA_DIR = os.environ.get("MEDIA_DIR")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
+FACE_MODEL_NAME = os.environ.get("FACE_MODEL_NAME")
+FACE_MODEL_BACKEND = os.environ.get("FACE_MODEL_BACKEND")
+MEDIA_DIR = os.environ.get("MEDIA_DIR")
+
 # Allowed MIME types
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 ALLOWED_VIDEO_TYPES = {"video/mp4", "video/avi", "video/mov", "video/mkv"}
+
+router = APIRouter(prefix="/uploads", tags=["media"])
 
 
 @router.post("", response_model=SingleItemResponse[Media])
@@ -30,109 +54,135 @@ async def upload_media(
     owner_id: int = Form(...),
     owner_type: str = Form(...),
     usage_type: str = Form(...),
-    current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ):
-    # validate owner_type & usage_type (same as before)
-    supported_usage_types = [item.value for item in MediaUsageType]
-    if usage_type not in supported_usage_types:
-        raise HTTPException(status_code=400, detail="Unsupported usage_type")
-
+    """
+    Uploads a file to Google Drive for the user.
+    - Saves Media + MediaUsage.
+    - If image -> also generate and save embeddings (multiple faces supported).
+    """
+    # --- validate owner ---
     if owner_type == "user":
         owner = session.get(User, owner_id)
-        if not owner:
-            raise HTTPException(status_code=404, detail="User not found")
     elif owner_type == "event":
         owner = session.get(Event, owner_id)
-        if not owner:
-            raise HTTPException(status_code=404, detail="Event not found")
     else:
-        raise HTTPException(status_code=400, detail="Invalid owner_type")
+        raise HTTPException(400, "Invalid owner_type")
 
-    # --- UPLOAD TO GOOGLE DRIVE ---
-    drive_service = get_drive_service(current_user)
+    if not owner:
+        raise HTTPException(404, f"{owner_type.capitalize()} not found")
 
-    file_stream = io.BytesIO(await file.read())
-    media_body = MediaIoBaseUpload(
-        file_stream, mimetype=file.content_type, resumable=True
-    )
+    supported_usage_types = [item.value for item in MediaUsageType]
+    if usage_type not in supported_usage_types:
+        raise HTTPException(400, f"Unsupported usage_type: {usage_type}")
 
-    uploaded_file = (
-        drive_service.files()
-        .create(
-            body={"name": file.filename, "parents": ["root"]},  # or a folder ID
-            media_body=media_body,
-            fields="id, webViewLink, mimeType, size",
+    try:
+        # --- Step 1: save media (Drive upload + DB insert) ---
+        media = save_media_file(
+            session=session,
+            file=file,
+            user=current_user,
+            owner_id=owner_id,
+            owner_type=owner_type,
+            usage_type=usage_type,
         )
-        .execute()
-    )
 
-    file_id = uploaded_file.get("id")
-    file_url = uploaded_file.get("webViewLink")
-    file_size = int(uploaded_file.get("size", 0))
-    mime_type = uploaded_file.get("mimeType")
+        # --- Step 2: embeddings only for images ---
+        if media.mime_type.startswith("image/"):
+            # download file back from Drive to temp for embedding
+            drive_service = get_drive_service(current_user)
+            local_fd, local_path = tempfile.mkstemp(suffix=".jpg")
+            os.close(local_fd)
 
-    # --- Save to DB (Media + MediaUsage) ---
-    media = Media(
-        url=file_url,
-        filename=file.filename,
-        original_filename=file.filename,
-        file_size=file_size,
-        mime_type=mime_type,
-        duration=None,
-        uploaded_by_id=current_user.id,
-        external_id=file_id,
-    )
-    session.add(media)
-    session.commit()
-    session.refresh(media)
+            request = drive_service.files().get_media(fileId=media.external_id)
+            with open(local_path, "wb") as tmp:
+                downloader = MediaIoBaseDownload(tmp, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
 
-    usage = MediaUsage(
-        content_type=owner_type,
-        owner_id=owner_id,
-        media_type=media.mime_type.split("/")[0],
-        usage_type=usage_type,
-        media_id=media.id,
-        owner_type=owner_type,
-    )
-    session.add(usage)
-    session.commit()
-    session.refresh(media)
+            try:
+                embeddings = generate_face_embeddings(
+                    local_path, media.mime_type, current_user
+                )
+            except Exception as e:
+                delete_media_and_file(session, media, current_user)
+                session.commit()
+                raise HTTPException(500, f"Face processing failed: {str(e)}")
+            finally:
+                if os.path.exists(local_path):
+                    os.remove(local_path)
 
-    return SingleItemResponse(data=media, message="Media uploaded to Google Drive")
+            # if this is enrollment, remove any old enrollment embeddings
+            if usage_type == "face_enrollment":
+                delete_old_face_enrollment(session, current_user.id)
+
+            # save embeddings (one per detected face)
+            for emb in embeddings:
+                media_embedding = MediaEmbedding(
+                    media_id=media.id,
+                    model_name=FACE_MODEL_NAME,
+                    user_id=(
+                        current_user.id if usage_type == "face_enrollment" else None
+                    ),
+                )
+                media_embedding.embedding = emb
+                session.add(media_embedding)
+
+        # --- Step 3: commit ---
+        session.commit()
+        session.refresh(media)
+        return SingleItemResponse(data=media, message="Media uploaded successfully")
+
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(500, f"Unexpected error: {str(e)}")
 
 
-@router.get("/me", response_model=PaginatedResponse[Media])
+@router.get("/me", response_model=PaginatedResponse[MediaRead])
 def get_user_uploads(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1),
 ):
-    total = session.exec(select(func.count(Media.id))).one()
+    total = session.exec(
+        select(func.count(Media.id)).where(Media.uploaded_by_id == current_user.id)
+    ).one()
     offset = (page - 1) * per_page
     user_uploads = session.exec(
         select(Media)
-        .filter(Media.uploaded_by_id == current_user.id)
+        .where(Media.uploaded_by_id == current_user.id)
         .order_by(Media.created_at.desc())
         .offset(offset)
         .limit(per_page)
     ).all()
 
+    # Convert to MediaRead with base64 data
+    drive_service = get_drive_service(current_user)
+    media_reads = []
+    for media in user_uploads:
+        media_reads.append(media.to_media_read(current_user, drive_service))
+
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
-    return PaginatedResponse[Media](
+    return PaginatedResponse[MediaRead](
         message="User uploads retrieved successfully",
-        data=user_uploads,
+        data=media_reads,
         pagination=Pagination(
             total=total, page=page, per_page=per_page, total_pages=total_pages
         ),
     )
 
 
-@router.get("/event/{event_id}", response_model=PaginatedResponse[Media])
+@router.get("/event/{event_id}", response_model=PaginatedResponse[MediaRead])
 async def get_event_media(
     event_id: int,
+    current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
     media_type: Optional[str] = Query(
         None, description="Filter by media type: image or video"
@@ -166,11 +216,17 @@ async def get_event_media(
         query.order_by(Media.id.desc()).offset(offset).limit(per_page)
     ).all()
 
+    # Convert to MediaRead with base64 data
+    drive_service = get_drive_service(current_user)
+    media_reads = []
+    for media in event_media:
+        media_reads.append(media.to_media_read(current_user, drive_service))
+
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
-    return PaginatedResponse[Media](
+    return PaginatedResponse[MediaRead](
         message="Event media retrieved successfully",
-        data=event_media,
+        data=media_reads,
         pagination=Pagination(
             total=total,
             page=page,

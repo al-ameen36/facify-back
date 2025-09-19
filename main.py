@@ -12,7 +12,6 @@ from fastapi.staticfiles import StaticFiles
 from routes.users import router as auth_router
 from routes.events import router as event_router
 from routes.media import router as media_router
-from routes.face import router as face_router
 from routes.drive import router as drive_router
 
 load_dotenv()
@@ -82,7 +81,6 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(event_router)
 app.include_router(media_router)
-app.include_router(face_router)
 app.include_router(drive_router)
 
 

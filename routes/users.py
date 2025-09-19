@@ -1,6 +1,6 @@
 from typing import Annotated
 from datetime import timedelta
-from fastapi import BackgroundTasks, Depends, APIRouter, HTTPException, Body
+from fastapi import BackgroundTasks, Depends, APIRouter, HTTPException, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from models.core import SingleItemResponse
 from sqlmodel import Session, select
@@ -29,10 +29,9 @@ from utils.users import (
     send_password_reset_email,
 )
 from db import get_session
+from utils.users import send_verification_email
 
 router = APIRouter(prefix="/user", tags=["user"])
-
-from utils.users import send_verification_email
 
 
 @router.post("/register", response_model=SingleItemResponse[UserRead])
@@ -81,6 +80,7 @@ async def verify_email(token: str, session: Session = Depends(get_session)):
 async def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     session: Session = Depends(get_session),
+    response: Response = None,  # inject FastAPI response
 ):
     user = authenticate_user(session, form_data.username, form_data.password)
     if not user:
@@ -93,17 +93,25 @@ async def login_for_access_token(
     access_token = create_access_token(user.username)
     refresh_token = create_refresh_token(user.username)
 
-    profile_picture = user.get_profile_picture(session)
-    user = UserRead.model_validate(user)
-    if profile_picture:
-        user.profile_picture = profile_picture.url
+    user_data = UserRead.model_validate(user)
+    user_data.profile_picture = user.get_profile_picture_base64(session)
+
+    # --- set the cookie ---
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        path="/",
+    )
 
     return Token(
         access_token=access_token,
         refresh_token=refresh_token,
         token_type="bearer",
         expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user=user,
+        user=user_data,
     )
 
 
@@ -143,9 +151,12 @@ async def logout_user(refresh_data: RefreshTokenRequest):
 
 @router.get("/me", response_model=UserRead)
 async def read_users_me(
-    current_user: Annotated[UserRead, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Session = Depends(get_session),
 ):
-    return current_user
+    user_data = UserRead.model_validate(current_user)
+    user_data.profile_picture = current_user.get_profile_picture_base64(session)
+    return user_data
 
 
 @router.post("/forgot-password")

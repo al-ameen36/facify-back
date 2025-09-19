@@ -24,6 +24,7 @@ from utils.events import (
 from utils.users import get_current_user
 from db import get_session
 
+
 router = APIRouter(prefix="/events", tags=["event"])
 
 
@@ -119,12 +120,10 @@ async def read_my_events_filtered(
         query.order_by(Event.start_time.desc()).offset(offset).limit(per_page)
     ).all()
 
-    # Attach cover photo
     events_with_media = []
     for event in events:
-        cover_photo = event.get_cover_photo(session)
         event_dict = event.model_dump()
-        event_dict["cover_photo"] = cover_photo.url if cover_photo else None
+        event_dict["cover_photo"] = event.get_cover_photo_base64(session, current_user)
         events_with_media.append(EventRead(**event_dict))
 
     total_pages = ((total - 1) // per_page) + 1 if total else 0
@@ -176,7 +175,7 @@ async def get_event_participants(
                     id=user.id,
                     full_name=getattr(user, "full_name", user.username),
                     username=user.username,
-                    photo=user.get_profile_picture(session).url,
+                    photo=user.get_profile_picture_base64(session),
                     email=user.email,
                     status=ep.status,
                     created_at=ep.created_at,
@@ -244,10 +243,9 @@ async def read_my_events(
     # Attach cover photo
     events_with_media = []
     for event in my_events:
-        cover_photo = event.get_cover_photo(session)
         event_dict = event.model_dump()
-        event_dict["cover_photo"] = cover_photo.url if cover_photo else None
-        events_with_media.append(event_dict)
+        event_dict["cover_photo"] = event.get_cover_photo_base64(session, current_user)
+        events_with_media.append(EventRead(**event_dict))
 
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
@@ -270,22 +268,17 @@ async def get_single_event(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    cover_photo = event.get_cover_photo(session)
     event_dict = event.model_dump()
-    event_dict["cover_photo"] = cover_photo.url if cover_photo else None
+    event_dict["cover_photo"] = event.get_cover_photo_base64(session, current_user)
 
     # Add host info
     host = session.get(User, event.created_by_id)
     if host:
-        photo = host.get_profile_picture(session)
-        # if photo:
-        # host.profile_picture = photo.url
-
         event_dict["created_by"] = {
             "id": host.id,
             "username": host.username,
             "email": host.email,
-            "photo": photo.url if photo else None,
+            "photo": host.get_profile_picture_base64(session),
         }
     else:
         event_dict["created_by"] = None

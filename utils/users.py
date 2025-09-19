@@ -1,14 +1,14 @@
 from datetime import datetime, timedelta
-from typing import Annotated, Optional
+from typing import Optional
 import jwt
 from jwt import PyJWTError
+from jose import JWTError
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlmodel import Session, select
 from dotenv import load_dotenv
 import os
-from jose import JWTError
 from fastapi_mail import MessageSchema
 from models import User
 from db import get_session
@@ -62,13 +62,6 @@ def create_user(
     return user
 
 
-def authenticate_user(session: Session, username: str, password: str) -> Optional[User]:
-    user = get_user_by_username(session, username)
-    if not user or not verify_password(password, user.hashed_password):
-        return None
-    return user
-
-
 def create_access_token(sub: str, expires_delta: Optional[timedelta] = None) -> str:
     expire = datetime.utcnow() + (
         expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -108,7 +101,7 @@ def revoke_refresh_token(token: str):
 
 
 async def get_current_user(
-    token: Annotated[str, Depends(oauth2_scheme)],
+    token: str = Depends(oauth2_scheme),
     session: Session = Depends(get_session),
 ) -> User:
     payload = decode_token(token)
@@ -121,11 +114,11 @@ async def get_current_user(
 
     username = payload.get("sub")
     if not username:
-        raise HTTPException(status_code=401, detail="Invalid token: no subject")
+        raise HTTPException(status_code=401, detail="Invalid token payload")
 
-    user = get_user_by_username(session, username)
+    user = session.exec(select(User).where(User.username == username)).first()
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+        raise HTTPException(status_code=404, detail="User not found")
     return user
 
 
