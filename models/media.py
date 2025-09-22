@@ -6,6 +6,7 @@ from models.core import AppBaseModel, ContentOwnerType, MediaType, MediaUsageTyp
 # Response models
 class MediaRead(SQLModel):
     """Media response model with base64 data for frontend"""
+
     id: int
     filename: str
     original_filename: Optional[str] = None
@@ -38,7 +39,7 @@ class MediaEmbedding(AppBaseModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     media_id: int = Field(foreign_key="media.id")
     model_name: str
-    embedding: List[float] = Field(sa_column=Column(JSON))
+    embeddings: List[List[float]] = Field(sa_column=Column(JSON))
 
     # For user enrollment (one-to-one)
     user_id: Optional[int] = Field(default=None, foreign_key="user.id")
@@ -83,6 +84,7 @@ class Media(AppBaseModel, table=True):
         try:
             if not drive_service:
                 from utils.drive import get_drive_service
+
                 drive_service = get_drive_service(user)
 
             from googleapiclient.http import MediaIoBaseDownload
@@ -115,5 +117,5 @@ class Media(AppBaseModel, table=True):
             uploaded_by_id=self.uploaded_by_id,
             created_at=self.created_at.isoformat() if self.created_at else None,
             updated_at=self.updated_at.isoformat() if self.updated_at else None,
-            data=self.get_base64_data(user, drive_service)
+            data=self.get_base64_data(user, drive_service),
         )

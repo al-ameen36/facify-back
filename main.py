@@ -18,7 +18,6 @@ load_dotenv()
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@email.com")
 DEFAULT_PASSWORD = os.getenv("ADMIN_PASSWORD", "password")
-MEDIA_DIR = os.environ.get("MEDIA_DIR")
 
 
 @asynccontextmanager
@@ -65,9 +64,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-
-app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
-
 
 app.add_middleware(
     CORSMiddleware,

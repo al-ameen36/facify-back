@@ -94,17 +94,7 @@ async def login_for_access_token(
     refresh_token = create_refresh_token(user.username)
 
     user_data = UserRead.model_validate(user)
-    user_data.profile_picture = user.get_profile_picture_base64(session)
-
-    # --- set the cookie ---
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        secure=False,
-        samesite="lax",
-        path="/",
-    )
+    user_data.profile_picture = user.get_profile_picture_media(session)
 
     return Token(
         access_token=access_token,

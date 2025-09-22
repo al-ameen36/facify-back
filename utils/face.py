@@ -169,51 +169,31 @@ def save_media_file(
     return media
 
 
-def generate_face_embeddings(
-    file_path_or_drive: str, mime_type: str, user: User, drive_service=None
-) -> list[list[float]]:
+def generate_face_embeddings(file: UploadFile) -> list[list[float]]:
     """
-    Download from Drive to temp file if needed, then call FACE API.
+    Call FACE API.
     Returns a list of embeddings (one per detected face).
     """
-    local_path = None
+    # Read file contents
+    file_bytes = file.file.read()
 
-    # Case 1: local file path provided
-    if os.path.exists(file_path_or_drive):
-        local_path = file_path_or_drive
-    else:
-        # Case 2: Drive file_id provided
-        if not drive_service:
-            drive_service = get_drive_service(user)
-
-        local_fd, local_path = tempfile.mkstemp(suffix=".jpg")
-        os.close(local_fd)
-
-        request = drive_service.files().get_media(fileId=file_path_or_drive)
-        with open(local_path, "wb") as tmp:
-            downloader = MediaIoBaseDownload(tmp, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-
-    # Call face embedding API
-    with open(local_path, "rb") as f:
-        files = {"file": ("image.jpg", f, mime_type)}
-        resp = requests.post(f"{FACE_API_URL}/embed", files=files)
-        resp.raise_for_status()
-        results = resp.json()  # expect list of dicts (one per face)
+    resp = requests.post(
+        f"{FACE_API_URL}/embed",
+        files={"file": (file.filename, file_bytes, file.content_type)},
+    )
+    resp.raise_for_status()
+    results = resp.json()
 
     embeddings = []
     if isinstance(results, list):
         for r in results:
             if "embedding" in r:
                 embeddings.append(r["embedding"])
-    elif isinstance(results, dict) and "embedding" in results:
-        embeddings.append(results["embedding"])
 
     if not embeddings:
         raise ValueError(f"Face API did not return embeddings: {results}")
 
+    file.file.seek(0)
     return embeddings
 
 

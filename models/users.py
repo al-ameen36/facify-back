@@ -86,6 +86,7 @@ class User(SQLModel, table=True):
     def get_profile_picture_media(self, session) -> Optional["Media"]:
         """Get current profile picture Media object"""
         from sqlmodel import select
+
         usage = session.exec(
             select(MediaUsage).where(
                 MediaUsage.owner_type == ContentOwnerType.USER,
@@ -94,74 +95,3 @@ class User(SQLModel, table=True):
             )
         ).first()
         return usage.media if usage else None
-
-    def get_profile_picture_base64(self, session, drive_service=None) -> Optional[str]:
-        """Get profile picture as base64 string for frontend"""
-        media = self.get_profile_picture_media(session)
-        if not media or not media.external_id:
-            return None
-
-        try:
-            if not drive_service:
-                from utils.drive import get_drive_service
-                drive_service = get_drive_service(self)
-
-            from googleapiclient.http import MediaIoBaseDownload
-            import io
-            import base64
-
-            request = drive_service.files().get_media(fileId=media.external_id)
-            file_stream = io.BytesIO()
-            downloader = MediaIoBaseDownload(file_stream, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-
-            file_stream.seek(0)
-            encoded = base64.b64encode(file_stream.read()).decode()
-            return f"data:{media.mime_type};base64,{encoded}"
-        except Exception:
-            # Fail gracefully
-            return None
-
-    def get_my_uploads(self, session) -> List["Media"]:
-        """Get all my uploads"""
-        from sqlmodel import select
-        usages = session.exec(
-            select(MediaUsage).where(
-                MediaUsage.owner_type == ContentOwnerType.USER,
-                MediaUsage.owner_id == self.id,
-                MediaUsage.usage_type == MediaUsageType.GALLERY,
-            )
-        ).all()
-        return [usage.media for usage in usages if usage.media]
-
-    def set_profile_picture(self, session, media: "Media"):
-        """Set a new profile picture"""
-        from sqlmodel import select
-        
-        # Find existing profile picture usage
-        usage = session.exec(
-            select(MediaUsage).where(
-                MediaUsage.owner_type == ContentOwnerType.USER,
-                MediaUsage.owner_id == self.id,
-                MediaUsage.usage_type == MediaUsageType.PROFILE_PICTURE,
-            )
-        ).first()
-
-        if usage:
-            # Update existing usage
-            usage.media_id = media.id
-        else:
-            # Create new usage
-            usage = MediaUsage(
-                owner_type=ContentOwnerType.USER,
-                owner_id=self.id,
-                usage_type=MediaUsageType.PROFILE_PICTURE,
-                media_type="image",
-                media_id=media.id,
-            )
-            session.add(usage)
-
-        session.commit()
-        return usage

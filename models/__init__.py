@@ -10,12 +10,20 @@ from .users import (
 from .events import (
     Event,
     EventCreate,
+    EventRead,
     EventParticipant,
     JoinEventRequest,
     EventCreateDB,
 )
 from .core import AppBaseModel, Pagination, SingleItemResponse, PaginatedResponse
-from .media import ContentOwnerType, Media, MediaUsage, MediaUsageType, MediaEmbedding,MediaRead
+from .media import (
+    ContentOwnerType,
+    Media,
+    MediaUsage,
+    MediaUsageType,
+    MediaEmbedding,
+    MediaRead,
+)
 
 
 # Rebuild models to resolve forward references
@@ -33,6 +41,7 @@ ForgotPasswordRequest.model_rebuild()
 ResetPasswordRequest.model_rebuild()
 
 Event.model_rebuild()
+EventRead.model_rebuild()
 EventCreate.model_rebuild()
 EventCreateDB.model_rebuild()
 JoinEventRequest.model_rebuild()
@@ -62,7 +71,7 @@ __all__ = [
     # Events
     "Event",
     "EventCreate",
-    "EventCreateDB",
+    "EventRead" "EventCreateDB",
     "JoinEventRequest",
     "EventParticipant",
     # Media

@@ -1,8 +1,5 @@
 import os
-import tempfile
 from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException
-from fastapi.responses import StreamingResponse
-import io
 from sqlmodel import Session, func, select
 from db import get_session
 from models import (
@@ -24,22 +21,17 @@ from utils.face import (
     delete_media_and_file,
     delete_old_face_enrollment,
     generate_face_embeddings,
-    save_media_file,
     get_drive_service,
 )
 from models import MediaEmbedding
 from googleapiclient.http import MediaIoBaseDownload
+from utils.media import upload_file, save_file_to_db
 
 
 load_dotenv()
 
-
-MEDIA_DIR = os.environ.get("MEDIA_DIR")
-os.makedirs(MEDIA_DIR, exist_ok=True)
-
 FACE_MODEL_NAME = os.environ.get("FACE_MODEL_NAME")
 FACE_MODEL_BACKEND = os.environ.get("FACE_MODEL_BACKEND")
-MEDIA_DIR = os.environ.get("MEDIA_DIR")
 
 # Allowed MIME types
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -58,7 +50,7 @@ async def upload_media(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Uploads a file to Google Drive for the user.
+    Uploads a file to ImageKit for the user.
     - Saves Media + MediaUsage.
     - If image -> also generate and save embeddings (multiple faces supported).
     """
@@ -78,9 +70,11 @@ async def upload_media(
         raise HTTPException(400, f"Unsupported usage_type: {usage_type}")
 
     try:
-        # --- Step 1: save media (Drive upload + DB insert) ---
-        media = save_media_file(
-            session=session,
+        # Generate embeddings first (this will read the file)
+        embeddings = generate_face_embeddings(file)
+
+        # Upload file
+        uploaded_media = upload_file(
             file=file,
             user=current_user,
             owner_id=owner_id,
@@ -88,52 +82,20 @@ async def upload_media(
             usage_type=usage_type,
         )
 
-        # --- Step 2: embeddings only for images ---
-        if media.mime_type.startswith("image/"):
-            # download file back from Drive to temp for embedding
-            drive_service = get_drive_service(current_user)
-            local_fd, local_path = tempfile.mkstemp(suffix=".jpg")
-            os.close(local_fd)
+        # Save to database
+        saved_media = save_file_to_db(
+            session=session,
+            media=uploaded_media,
+            owner_id=owner_id,
+            owner_type=owner_type,
+            usage_type=usage_type,
+            embeddings=embeddings,
+            user_id=current_user.id,
+        )
 
-            request = drive_service.files().get_media(fileId=media.external_id)
-            with open(local_path, "wb") as tmp:
-                downloader = MediaIoBaseDownload(tmp, request)
-                done = False
-                while not done:
-                    _, done = downloader.next_chunk()
-
-            try:
-                embeddings = generate_face_embeddings(
-                    local_path, media.mime_type, current_user
-                )
-            except Exception as e:
-                delete_media_and_file(session, media, current_user)
-                session.commit()
-                raise HTTPException(500, f"Face processing failed: {str(e)}")
-            finally:
-                if os.path.exists(local_path):
-                    os.remove(local_path)
-
-            # if this is enrollment, remove any old enrollment embeddings
-            if usage_type == "face_enrollment":
-                delete_old_face_enrollment(session, current_user.id)
-
-            # save embeddings (one per detected face)
-            for emb in embeddings:
-                media_embedding = MediaEmbedding(
-                    media_id=media.id,
-                    model_name=FACE_MODEL_NAME,
-                    user_id=(
-                        current_user.id if usage_type == "face_enrollment" else None
-                    ),
-                )
-                media_embedding.embedding = emb
-                session.add(media_embedding)
-
-        # --- Step 3: commit ---
-        session.commit()
-        session.refresh(media)
-        return SingleItemResponse(data=media, message="Media uploaded successfully")
+        return SingleItemResponse(
+            data=saved_media, message="Successfully uploaded media"
+        )
 
     except HTTPException:
         session.rollback()
@@ -162,17 +124,11 @@ def get_user_uploads(
         .limit(per_page)
     ).all()
 
-    # Convert to MediaRead with base64 data
-    drive_service = get_drive_service(current_user)
-    media_reads = []
-    for media in user_uploads:
-        media_reads.append(media.to_media_read(current_user, drive_service))
-
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
     return PaginatedResponse[MediaRead](
         message="User uploads retrieved successfully",
-        data=media_reads,
+        data=user_uploads,
         pagination=Pagination(
             total=total, page=page, per_page=per_page, total_pages=total_pages
         ),
@@ -220,7 +176,7 @@ async def get_event_media(
     drive_service = get_drive_service(current_user)
     media_reads = []
     for media in event_media:
-        media_reads.append(media.to_media_read(current_user, drive_service))
+        media_reads.append(media)
 
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 

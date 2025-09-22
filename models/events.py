@@ -38,7 +38,7 @@ class EventRead(EventBase):
     created_by_id: int
     updated_at: datetime
     created_at: datetime
-    cover_photo: Optional[str] = None
+    cover_photo: Optional["Media"] = None
     secret: Optional[str] = None
 
 
@@ -108,33 +108,3 @@ class Event(AppBaseModel, table=True):
             return None
 
         return usage.media
-
-    def get_cover_photo_base64(
-        self, session, user: "User", drive_service=None
-    ) -> Optional[str]:
-        """
-        Returns the cover photo as a base64 string ready for frontend <img src="...">.
-        Returns None if no cover photo exists or fetching fails.
-        """
-        media = self.get_cover_photo_media(session)
-        if not media or not media.external_id:
-            return None
-
-        try:
-            if not drive_service:
-                from utils.drive import get_drive_service
-                drive_service = get_drive_service(user)
-
-            request = drive_service.files().get_media(fileId=media.external_id)
-            file_stream = io.BytesIO()
-            downloader = MediaIoBaseDownload(file_stream, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-
-            file_stream.seek(0)
-            encoded = base64.b64encode(file_stream.read()).decode()
-            return f"data:{media.mime_type};base64,{encoded}"
-        except Exception:
-            # Fail gracefully
-            return None

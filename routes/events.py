@@ -37,7 +37,6 @@ async def add_event(
     if get_event_by_name(session, event_data.name):
         raise HTTPException(status_code=400, detail="Event already exists")
 
-    print(current_user.id)
     try:
         event = EventCreateDB(
             created_by_id=current_user.id,
@@ -70,12 +69,16 @@ async def update_event_route(
         raise HTTPException(status_code=401, detail="Not authorized")
 
     try:
-        event = update_event(
+        updated_event = update_event(
             session=session,
             event=event,
             update_data=event_data,
             created_by_id=event.created_by_id,
         )
+
+        event_dict = updated_event.model_dump()
+        event_dict["cover_photo"] = updated_event.get_cover_photo_media(session)
+        event = EventRead(**event_dict)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -123,7 +126,7 @@ async def read_my_events_filtered(
     events_with_media = []
     for event in events:
         event_dict = event.model_dump()
-        event_dict["cover_photo"] = event.get_cover_photo_base64(session, current_user)
+        event_dict["cover_photo"] = event.get_cover_photo_media(session)
         events_with_media.append(EventRead(**event_dict))
 
     total_pages = ((total - 1) // per_page) + 1 if total else 0
@@ -175,7 +178,7 @@ async def get_event_participants(
                     id=user.id,
                     full_name=getattr(user, "full_name", user.username),
                     username=user.username,
-                    photo=user.get_profile_picture_base64(session),
+                    photo=user.get_profile_picture_media(session),
                     email=user.email,
                     status=ep.status,
                     created_at=ep.created_at,
@@ -269,7 +272,7 @@ async def get_single_event(
         raise HTTPException(status_code=404, detail="Event not found")
 
     event_dict = event.model_dump()
-    event_dict["cover_photo"] = event.get_cover_photo_base64(session, current_user)
+    event_dict["cover_photo"] = event.get_cover_photo_media(session)
 
     # Add host info
     host = session.get(User, event.created_by_id)
@@ -278,7 +281,7 @@ async def get_single_event(
             "id": host.id,
             "username": host.username,
             "email": host.email,
-            "photo": host.get_profile_picture_base64(session),
+            "photo": host.get_profile_picture_media(session),
         }
     else:
         event_dict["created_by"] = None
