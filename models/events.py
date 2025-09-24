@@ -1,5 +1,5 @@
 from datetime import datetime
-from models.media import MediaUsage
+from models.media import MediaUsage, Media
 from sqlmodel import SQLModel, Field, Relationship, select
 from typing import List, Optional
 from models.core import AppBaseModel, ContentOwnerType, MediaUsageType
@@ -54,7 +54,7 @@ class ParticipantRead(SQLModel):
     id: int
     full_name: str
     username: str
-    photo: Optional[str] = None
+    photo: Optional["Media"] = None
     email: str
     status: str
     created_at: datetime

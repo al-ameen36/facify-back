@@ -5,7 +5,7 @@ from typing import List
 from imagekitio import ImageKit
 from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
 from dotenv import load_dotenv
-from sqlmodel import Session
+from sqlmodel import Session, select
 from fastapi import UploadFile
 from models import User, Media, MediaUsage, MediaEmbedding
 import mimetypes
@@ -123,8 +123,46 @@ def save_file_to_db(
         model_name="Facenet",
         user_id=(user_id if usage_type == "face_enrollment" else None),
         embeddings=embeddings,
+        status="completed" if embeddings else "pending",
     )
     session.add(media_embedding)
     session.commit()
 
     return media
+
+
+def delete_media_and_file(session: Session, media: Media, user: User):
+    """Delete a media row + embedding + usages + ImageKit file, only if owned by the user."""
+    if not media:
+        return
+
+    # Get usages for this media
+    usages = session.exec(
+        select(MediaUsage).where(MediaUsage.media_id == media.id)
+    ).all()
+
+    # Ownership check
+    if not all(usage.owner_id == user.id for usage in usages):
+        raise PermissionError("You are not allowed to delete this media")
+
+    # Delete from ImageKit
+    if media.external_id:
+        try:
+            imagekit.delete_file(media.external_id)
+        except Exception:
+            pass
+
+    # Delete embedding
+    embedding = session.exec(
+        select(MediaEmbedding).where(MediaEmbedding.media_id == media.id)
+    ).first()
+    if embedding:
+        session.delete(embedding)
+
+    # Delete usages
+    for usage in usages:
+        session.delete(usage)
+
+    # Delete the media itself
+    session.delete(media)
+    session.flush()

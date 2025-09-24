@@ -124,7 +124,7 @@ async def update_event_route(
 @router.get("", response_model=PaginatedResponse[EventRead])
 async def read_my_events_filtered(
     status: Optional[str] = Query(
-        None, regex="^(past|upcoming)$", description="Filter events: past or upcoming"
+        None, regex="^(current|past|upcoming)$", description="Filter events: past (ended), upcoming (includes current/ongoing events), or current (only ongoing events)"
     ),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
@@ -133,7 +133,7 @@ async def read_my_events_filtered(
 ):
     now = datetime.now(timezone.utc)
 
-    # Base query: events created by user OR joined
+    # Base query: events created by user OR joined (with DISTINCT to avoid duplicates)
     query = (
         select(Event)
         .join(EventParticipant, Event.id == EventParticipant.event_id, isouter=True)
@@ -141,13 +141,18 @@ async def read_my_events_filtered(
             (Event.created_by_id == current_user.id)
             | (EventParticipant.user_id == current_user.id)
         )
+        .distinct()
     )
 
     # Apply status filter
     if status == "past":
         query = query.filter(Event.end_time < now)
     elif status == "upcoming":
-        query = query.filter(Event.start_time >= now)
+        # Include both upcoming events (not started) AND current events (started but not ended)
+        query = query.filter(Event.end_time >= now)
+    elif status == "current":
+        # Only current/ongoing events (started but not ended)
+        query = query.filter(Event.start_time < now, Event.end_time >= now)
 
     total = session.exec(select(func.count()).select_from(query.subquery())).one()
     offset = (page - 1) * per_page
@@ -287,7 +292,7 @@ async def read_my_events(
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1),
 ):
-    total = session.exec(select(func.count(Event.id))).one()
+    total = session.exec(select(func.count(Event.id)).where(Event.created_by_id == current_user.id)).one()
     offset = (page - 1) * per_page
 
     my_events = session.exec(
@@ -302,7 +307,7 @@ async def read_my_events(
     events_with_media = []
     for event in my_events:
         event_dict = event.model_dump()
-        event_dict["cover_photo"] = event.get_cover_photo_base64(session, current_user)
+        event_dict["cover_photo"] = event.get_cover_photo_media(session)
         events_with_media.append(EventRead(**event_dict))
 
     total_pages = ((total - 1) // per_page) + 1 if total else 0

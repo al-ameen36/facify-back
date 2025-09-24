@@ -3,12 +3,8 @@ import numpy as np
 import requests
 from fastapi import UploadFile
 from sqlmodel import Session, select
-import mimetypes
-import tempfile
 import os
-from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 from models import Media, MediaUsage, MediaEmbedding, User
-from utils.drive import get_drive_service
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,140 +29,8 @@ def euclidean_distance(embedding1: List[float], embedding2: List[float]) -> floa
 
 
 # ------------------------------
-# Drive helpers
-# ------------------------------
-def download_drive_file(drive_service, file_id, local_path):
-    request = drive_service.files().get_media(fileId=file_id)
-    with open(local_path, "wb") as f:
-        downloader = MediaIoBaseDownload(f, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-    return local_path
-
-
-def get_or_create_app_folders(drive_service, app_name="MyApp"):
-    """Ensure app folders exist: [app_name]/images, videos, docs"""
-    # Step 1: root folder
-    q = f"name='{app_name}' and mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false"
-    results = drive_service.files().list(q=q, fields="files(id)").execute()
-    if results["files"]:
-        root_id = results["files"][0]["id"]
-    else:
-        root_id = (
-            drive_service.files()
-            .create(
-                body={
-                    "name": app_name,
-                    "mimeType": "application/vnd.google-apps.folder",
-                    "parents": ["root"],
-                },
-                fields="id",
-            )
-            .execute()["id"]
-        )
-
-    # Step 2: subfolders
-    folders = {}
-    for name in ["images", "videos", "docs"]:
-        q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and '{root_id}' in parents and trashed=false"
-        res = drive_service.files().list(q=q, fields="files(id)").execute()
-        if res["files"]:
-            folders[name] = res["files"][0]["id"]
-        else:
-            folders[name] = (
-                drive_service.files()
-                .create(
-                    body={
-                        "name": name,
-                        "mimeType": "application/vnd.google-apps.folder",
-                        "parents": [root_id],
-                    },
-                    fields="id",
-                )
-                .execute()["id"]
-            )
-    return folders
-
-
-def determine_folder_id(drive_service, mime_type: str, folders: dict):
-    if mime_type.startswith("image/"):
-        return folders["images"]
-    elif mime_type.startswith("video/"):
-        return folders["videos"]
-    else:
-        return folders["docs"]
-
-
-# ------------------------------
 # Media ops
 # ------------------------------
-def save_media_file(
-    session: Session,
-    file: UploadFile,
-    user: User,
-    owner_id: int,
-    owner_type: str,
-    usage_type: str,
-) -> Media:
-    """Upload file to the user's Drive and save metadata in DB."""
-
-    drive_service = get_drive_service(user)
-
-    # create folders if missing
-    folders = get_or_create_app_folders(drive_service, app_name=APP_NAME)
-
-    # choose folder based on mime
-    mime_type = (
-        file.content_type
-        or mimetypes.guess_type(file.filename)[0]
-        or "application/octet-stream"
-    )
-    folder_id = determine_folder_id(drive_service, mime_type, folders)
-
-    # upload to Drive
-    media_body = MediaIoBaseUpload(file.file, mimetype=mime_type, resumable=True)
-    uploaded = (
-        drive_service.files()
-        .create(
-            body={"name": file.filename, "parents": [folder_id]},
-            media_body=media_body,
-            fields="id, webViewLink, mimeType, size",
-        )
-        .execute()
-    )
-
-    file_id = uploaded["id"]
-    file_url = uploaded["webViewLink"]
-    file_size = int(uploaded.get("size", 0))
-
-    # save Media
-    media = Media(
-        external_url=file_url,
-        filename=file.filename,
-        original_filename=file.filename,
-        file_size=file_size,
-        mime_type=mime_type,
-        uploaded_by_id=user.id,
-        external_id=file_id,
-    )
-    session.add(media)
-    session.flush()
-
-    # save MediaUsage (dynamic now)
-    usage = MediaUsage(
-        owner_id=owner_id,
-        owner_type=owner_type,
-        usage_type=usage_type,
-        media_type=(
-            "image" if mime_type.startswith("image/") else mime_type.split("/")[0]
-        ),
-        media_id=media.id,
-    )
-    session.add(usage)
-    session.flush()
-
-    return media
 
 
 def generate_face_embeddings(file: UploadFile) -> list[list[float]]:

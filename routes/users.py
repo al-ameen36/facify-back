@@ -93,8 +93,7 @@ async def login_for_access_token(
     access_token = create_access_token(user.username)
     refresh_token = create_refresh_token(user.username)
 
-    user_data = UserRead.model_validate(user)
-    user_data.profile_picture = user.get_profile_picture_media(session)
+    user_data = user.to_user_read(session)
 
     return Token(
         access_token=access_token,
@@ -144,9 +143,7 @@ async def read_users_me(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Session = Depends(get_session),
 ):
-    user_data = UserRead.model_validate(current_user)
-    user_data.profile_picture = current_user.get_profile_picture_base64(session)
-    return user_data
+    return current_user.to_user_read(session)
 
 
 @router.post("/forgot-password")

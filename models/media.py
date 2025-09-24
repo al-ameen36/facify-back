@@ -39,7 +39,12 @@ class MediaEmbedding(AppBaseModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     media_id: int = Field(foreign_key="media.id")
     model_name: str
-    embeddings: List[List[float]] = Field(sa_column=Column(JSON))
+    embeddings: Optional[List[List[float]]] = Field(default=None, sa_column=Column(JSON))
+    
+    # Background processing status
+    status: Optional[str] = Field(default="pending")  # pending, processing, completed, failed
+    processed_at: Optional[str] = None
+    error_message: Optional[str] = None
 
     # For user enrollment (one-to-one)
     user_id: Optional[int] = Field(default=None, foreign_key="user.id")

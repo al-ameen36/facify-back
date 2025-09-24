@@ -1,9 +1,10 @@
 import os
-from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException, BackgroundTasks
 from sqlmodel import Session, func, select
 from db import get_session
 from models import (
     User,
+    UserRead,
     Media,
     MediaRead,
     MediaUsage,
@@ -15,7 +16,7 @@ from models import (
     Pagination,
     SingleItemResponse,
 )
-from typing import Optional
+from typing import Optional, Union
 from dotenv import load_dotenv
 from utils.users import get_current_user
 from utils.face import (
@@ -38,8 +39,9 @@ ALLOWED_VIDEO_TYPES = {"video/mp4", "video/avi", "video/mov", "video/mkv"}
 router = APIRouter(prefix="/uploads", tags=["media"])
 
 
-@router.post("", response_model=SingleItemResponse[Media])
+@router.post("", response_model=Union[SingleItemResponse[Media], SingleItemResponse[UserRead]])
 async def upload_media(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     owner_id: int = Form(...),
     owner_type: str = Form(...),
@@ -111,12 +113,7 @@ async def upload_media(
                 delete_media_and_file(session, old_usage.media, current_user)
                 session.commit()
 
-        # Generate embeddings first (this will read the file)
-        embeddings = None
-        if usage_type != MediaUsageType.COVER_PHOTO:
-            embeddings = generate_face_embeddings(file)
-
-        # Upload file
+        # Upload file first
         uploaded_media = upload_file(
             file=file,
             user=current_user,
@@ -125,17 +122,34 @@ async def upload_media(
             usage_type=usage_type,
         )
 
-        # Save to database
+        # Save to database without embeddings
         saved_media = save_file_to_db(
             session=session,
             media=uploaded_media,
             owner_id=owner_id,
             owner_type=owner_type,
             usage_type=usage_type,
-            embeddings=embeddings,
+            embeddings=None,  # Will be generated in background
             user_id=current_user.id,
         )
 
+        # Queue embedding generation in background (skip for cover photos)
+        if usage_type != MediaUsageType.COVER_PHOTO:
+            background_tasks.add_task(
+                generate_embeddings_background,
+                saved_media.id,
+                uploaded_media.external_url,
+                uploaded_media.external_id
+            )
+
+        # If uploading profile picture, return updated user data
+        if usage_type == MediaUsageType.PROFILE_PICTURE and owner_type == "user":
+            session.refresh(current_user)  # Refresh to get latest data
+            user_data = current_user.to_user_read(session)
+            return SingleItemResponse(
+                data=user_data, message="Profile picture updated successfully"
+            )
+        
         return SingleItemResponse(
             data=saved_media, message="Successfully uploaded media"
         )
@@ -249,3 +263,87 @@ async def get_event_media(
             total_pages=total_pages,
         ),
     )
+
+
+def generate_embeddings_background(media_id: int, external_url: str, external_id: str):
+    """Background task to generate face embeddings for uploaded media"""
+    from db import get_session
+    import requests
+    from datetime import datetime
+    
+    session = next(get_session())
+    
+    try:
+        # Get the media embedding record
+        media_embedding = session.exec(
+            select(MediaEmbedding).where(MediaEmbedding.media_id == media_id)
+        ).first()
+        
+        if not media_embedding:
+            print(f"No MediaEmbedding found for media_id {media_id}")
+            return
+            
+        # Update status to processing
+        media_embedding.status = "processing"
+        session.commit()
+        
+        # Download the image from external URL
+        response = requests.get(external_url)
+        response.raise_for_status()
+        
+        # Call face API
+        face_response = requests.post(
+            f"{FACE_API_URL}/embed",
+            files={"file": ("image", response.content, "image/jpeg")},
+        )
+        face_response.raise_for_status()
+        results = face_response.json()
+        
+        # Extract embeddings
+        embeddings = []
+        if isinstance(results, list):
+            for r in results:
+                if "embedding" in r:
+                    embeddings.append(r["embedding"])
+        
+        # Update the embedding record
+        media_embedding.embeddings = embeddings
+        media_embedding.status = "completed" if embeddings else "failed"
+        media_embedding.processed_at = datetime.utcnow()
+        if not embeddings:
+            media_embedding.error_message = "No faces detected"
+            
+        session.commit()
+        print(f"Successfully processed embeddings for media_id {media_id}: {len(embeddings)} faces found")
+        
+    except Exception as e:
+        # Update status to failed
+        if 'media_embedding' in locals():
+            media_embedding.status = "failed"
+            media_embedding.error_message = str(e)
+            media_embedding.processed_at = datetime.utcnow()
+            session.commit()
+        print(f"Failed to process embeddings for media_id {media_id}: {str(e)}")
+    
+    finally:
+        session.close()
+
+
+@router.get("/embedding-status", response_model=dict)
+def get_embedding_status(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Get embedding processing status for debugging"""
+    if not current_user.is_admin:
+        raise HTTPException(403, "Admin access required")
+    
+    status_counts = session.exec(
+        select(MediaEmbedding.status, func.count(MediaEmbedding.id))
+        .group_by(MediaEmbedding.status)
+    ).all()
+    
+    return {
+        "embedding_status": {status: count for status, count in status_counts},
+        "message": "Embedding processing status retrieved"
+    }
