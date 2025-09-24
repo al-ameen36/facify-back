@@ -28,6 +28,39 @@ from db import get_session
 router = APIRouter(prefix="/events", tags=["event"])
 
 
+@router.post("/{event_id}/join")
+def join_event(
+    event_id: int,
+    body: JoinEventRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    event = session.get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    if event.secret and event.secret != body.secret:
+        raise HTTPException(status_code=403, detail="Invalid secret")
+
+    # check if already a participant
+    statement = select(EventParticipant).where(
+        EventParticipant.event_id == event_id,
+        EventParticipant.user_id == current_user.id,
+    )
+    existing = session.exec(statement).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Already a participant")
+
+    # By default, participant status is "pending"
+    participant = EventParticipant(
+        event_id=event_id, user_id=current_user.id, status="pending"
+    )
+    session.add(participant)
+    session.commit()
+
+    return SingleItemResponse(data=event, message= f"{current_user.username} joined the event (pending approval)")
+
+
 @router.post("", response_model=SingleItemResponse[EventRead])
 async def add_event(
     event_data: EventCreate,
@@ -159,6 +192,28 @@ async def get_event_participants(
     per_page: int = Query(10, ge=1),
     current_user: User = Depends(get_current_user),
 ):
+    # Check if event exists
+    event = session.get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Check if user is event creator or approved participant
+    if event.created_by_id != current_user.id:
+        participant_check = session.exec(
+            select(EventParticipant).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == current_user.id
+            )
+        ).first()
+        
+        if not participant_check:
+            raise HTTPException(status_code=403, detail="You are not a participant of this event")
+        elif participant_check.status == "pending":
+            raise HTTPException(status_code=403, detail="Your participation request is still pending approval")
+        elif participant_check.status == "rejected":
+            raise HTTPException(status_code=403, detail="Your participation request was rejected")
+        elif participant_check.status != "approved":
+            raise HTTPException(status_code=403, detail="Access denied")
     # Query EventParticipant table for participants of the event
     statement = select(EventParticipant).where(EventParticipant.event_id == event_id)
     if status:
@@ -270,6 +325,24 @@ async def get_single_event(
     event = session.get(Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Check if user is event creator or approved participant
+    if event.created_by_id != current_user.id:
+        participant_check = session.exec(
+            select(EventParticipant).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == current_user.id
+            )
+        ).first()
+        
+        if not participant_check:
+            raise HTTPException(status_code=403, detail="You are not a participant of this event")
+        elif participant_check.status == "pending":
+            raise HTTPException(status_code=403, detail="Your participation request is still pending approval")
+        elif participant_check.status == "rejected":
+            raise HTTPException(status_code=403, detail="Your participation request was rejected")
+        elif participant_check.status != "approved":
+            raise HTTPException(status_code=403, detail="Access denied")
 
     event_dict = event.model_dump()
     event_dict["cover_photo"] = event.get_cover_photo_media(session)
@@ -290,38 +363,6 @@ async def get_single_event(
         message="Event retrieved successfully", data=event_dict
     )
 
-
-@router.post("/{event_id}/join")
-def join_event(
-    event_id: int,
-    body: JoinEventRequest,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
-):
-    event = session.get(Event, event_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    if event.secret and event.secret != body.secret:
-        raise HTTPException(status_code=403, detail="Invalid secret")
-
-    # check if already a participant
-    statement = select(EventParticipant).where(
-        EventParticipant.event_id == event_id,
-        EventParticipant.user_id == current_user.id,
-    )
-    existing = session.exec(statement).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Already a participant")
-
-    # By default, participant status is "pending"
-    participant = EventParticipant(
-        event_id=event_id, user_id=current_user.id, status="pending"
-    )
-    session.add(participant)
-    session.commit()
-
-    return {"message": f"{current_user.username} joined the event (pending approval)"}
 
 
 @router.post("/{event_id}/participants/{user_id}/status")

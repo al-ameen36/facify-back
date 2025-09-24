@@ -8,24 +8,22 @@ from models import (
     MediaRead,
     MediaUsage,
     Event,
+    EventParticipant,
     ContentOwnerType,
     MediaUsageType,
     PaginatedResponse,
     Pagination,
     SingleItemResponse,
 )
-from utils.users import get_current_user
 from typing import Optional
 from dotenv import load_dotenv
+from utils.users import get_current_user
 from utils.face import (
-    delete_media_and_file,
-    delete_old_face_enrollment,
     generate_face_embeddings,
-    get_drive_service,
 )
+from utils.media import upload_file, save_file_to_db, delete_media_and_file
 from models import MediaEmbedding
 from googleapiclient.http import MediaIoBaseDownload
-from utils.media import upload_file, save_file_to_db
 
 
 load_dotenv()
@@ -57,8 +55,37 @@ async def upload_media(
     # --- validate owner ---
     if owner_type == "user":
         owner = session.get(User, owner_id)
+        # Users can only upload media for themselves
+        if owner_id != current_user.id:
+            raise HTTPException(403, "You can only upload media for yourself")
     elif owner_type == "event":
         owner = session.get(Event, owner_id)
+        if not owner:
+            raise HTTPException(404, "Event not found")
+        
+        # For events, check authorization based on usage type
+        if usage_type == MediaUsageType.COVER_PHOTO:
+            # Only event creator can upload cover photos
+            if owner.created_by_id != current_user.id:
+                raise HTTPException(403, "Only event creators can upload cover photos")
+        elif usage_type == MediaUsageType.GALLERY:
+            # Event creator or approved participants can upload to gallery
+            if owner.created_by_id != current_user.id:
+                participant_check = session.exec(
+                    select(EventParticipant).where(
+                        EventParticipant.event_id == owner_id,
+                        EventParticipant.user_id == current_user.id
+                    )
+                ).first()
+                
+                if not participant_check:
+                    raise HTTPException(403, "You are not a participant of this event")
+                elif participant_check.status == "pending":
+                    raise HTTPException(403, "Your participation request is still pending approval")
+                elif participant_check.status == "rejected":
+                    raise HTTPException(403, "Your participation request was rejected")
+                elif participant_check.status != "approved":
+                    raise HTTPException(403, "Access denied")
     else:
         raise HTTPException(400, "Invalid owner_type")
 
@@ -70,8 +97,24 @@ async def upload_media(
         raise HTTPException(400, f"Unsupported usage_type: {usage_type}")
 
     try:
+        # if cover_photo or profile_picture: delete existing one
+        if usage_type in [MediaUsageType.COVER_PHOTO, MediaUsageType.PROFILE_PICTURE]:
+            old_usage = session.exec(
+                select(MediaUsage).where(
+                    MediaUsage.owner_id == owner_id,
+                    MediaUsage.owner_type == owner_type,
+                    MediaUsage.usage_type == usage_type,
+                )
+            ).first()
+
+            if old_usage:
+                delete_media_and_file(session, old_usage.media, current_user)
+                session.commit()
+
         # Generate embeddings first (this will read the file)
-        embeddings = generate_face_embeddings(file)
+        embeddings = None
+        if usage_type != MediaUsageType.COVER_PHOTO:
+            embeddings = generate_face_embeddings(file)
 
         # Upload file
         uploaded_media = upload_file(
@@ -146,6 +189,28 @@ async def get_event_media(
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1),
 ):
+    # Check if event exists
+    event = session.get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Check if user is event creator or approved participant
+    if event.created_by_id != current_user.id:
+        participant_check = session.exec(
+            select(EventParticipant).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == current_user.id
+            )
+        ).first()
+        
+        if not participant_check:
+            raise HTTPException(status_code=403, detail="You are not a participant of this event")
+        elif participant_check.status == "pending":
+            raise HTTPException(status_code=403, detail="Your participation request is still pending approval")
+        elif participant_check.status == "rejected":
+            raise HTTPException(status_code=403, detail="Your participation request was rejected")
+        elif participant_check.status != "approved":
+            raise HTTPException(status_code=403, detail="Access denied")
     # Base query: select Media via MediaUsage
     query = (
         select(Media)
@@ -172,17 +237,11 @@ async def get_event_media(
         query.order_by(Media.id.desc()).offset(offset).limit(per_page)
     ).all()
 
-    # Convert to MediaRead with base64 data
-    drive_service = get_drive_service(current_user)
-    media_reads = []
-    for media in event_media:
-        media_reads.append(media)
-
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
     return PaginatedResponse[MediaRead](
         message="Event media retrieved successfully",
-        data=media_reads,
+        data=event_media,
         pagination=Pagination(
             total=total,
             page=page,
