@@ -181,8 +181,8 @@ def save_file_to_db(
     return media
 
 
-def delete_media_and_file(session: Session, media: Media, user: User):
-    """Delete a media row + embedding + usages + ImageKit file, only if owned by the user."""
+def delete_media_and_file(session: Session, media: Media, user: User = None):
+    """Delete a media row + embedding + usages + ImageKit file."""
     if not media:
         return
 
@@ -191,22 +191,19 @@ def delete_media_and_file(session: Session, media: Media, user: User):
         select(MediaUsage).where(MediaUsage.media_id == media.id)
     ).all()
 
-    # Ownership check
-    if not all(usage.owner_id == user.id for usage in usages):
-        raise PermissionError("You are not allowed to delete this media")
-
     # Delete from ImageKit
     if media.external_id:
         try:
             imagekit.delete_file(media.external_id)
         except Exception:
+            # Continue with database cleanup even if ImageKit deletion fails
             pass
 
-    # Delete embedding
-    embedding = session.exec(
+    # Delete embeddings
+    embeddings = session.exec(
         select(MediaEmbedding).where(MediaEmbedding.media_id == media.id)
-    ).first()
-    if embedding:
+    ).all()
+    for embedding in embeddings:
         session.delete(embedding)
 
     # Delete usages

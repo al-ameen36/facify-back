@@ -350,6 +350,70 @@ def generate_embeddings_background(media_id: int, external_url: str, external_id
         session.close()
 
 
+@router.delete("/{media_id}", response_model=dict)
+async def delete_media(
+    media_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """
+    Delete a media file and all associated data.
+    Users can only delete media they uploaded or media from events they created.
+    """
+    # Get the media record
+    media = session.get(Media, media_id)
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
+    # Get media usage to check ownership/permissions
+    media_usage = session.exec(
+        select(MediaUsage).where(MediaUsage.media_id == media_id)
+    ).first()
+    
+    if not media_usage:
+        raise HTTPException(status_code=404, detail="Media usage not found")
+    
+    # Authorization checks
+    can_delete = False
+    
+    # Check if user uploaded the media
+    if media.uploaded_by_id == current_user.id:
+        can_delete = True
+    
+    # Check if user owns the content (event creator for event media)
+    elif media_usage.owner_type == ContentOwnerType.EVENT:
+        event = session.get(Event, media_usage.owner_id)
+        if event and event.created_by_id == current_user.id:
+            can_delete = True
+    
+    # Check if user owns their own profile picture
+    elif media_usage.owner_type == ContentOwnerType.USER and media_usage.owner_id == current_user.id:
+        can_delete = True
+    
+    if not can_delete:
+        raise HTTPException(
+            status_code=403, 
+            detail="You don't have permission to delete this media"
+        )
+    
+    try:
+        # Delete media and associated files
+        delete_media_and_file(session, media, current_user)
+        session.commit()
+        
+        return {
+            "message": "Media deleted successfully",
+            "media_id": media_id
+        }
+        
+    except PermissionError as e:
+        session.rollback()
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete media: {str(e)}")
+
+
 @router.get("/embedding-status", response_model=dict)
 def get_embedding_status(
     current_user: User = Depends(get_current_user),
