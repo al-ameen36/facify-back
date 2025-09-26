@@ -1,11 +1,11 @@
-from sqlmodel import Field, Relationship, Column, String, JSON, SQLModel
+from sqlmodel import Field, Relationship, Column, String, JSON, SQLModel, Index
 from typing import Optional, List
 from models.core import AppBaseModel, ContentOwnerType, MediaType, MediaUsageType
 
 
 # Response models
 class MediaRead(SQLModel):
-    """Media response model with base64 data for frontend"""
+    """Media response model for frontend"""
 
     id: int
     filename: str
@@ -16,12 +16,16 @@ class MediaRead(SQLModel):
     uploaded_by_id: Optional[int] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-    # Base64 encoded media data for frontend
-    data: Optional[str] = None
 
 
 class MediaUsage(AppBaseModel, table=True):
     """Generic relationship table linking Media to any content type"""
+    
+    __table_args__ = (
+        # Composite indexes for common query patterns
+        Index("idx_media_usage_owner_usage", "owner_type", "owner_id", "usage_type"),
+        Index("idx_media_usage_media_usage", "media_id", "usage_type"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
 
@@ -78,40 +82,10 @@ class Media(AppBaseModel, table=True):
     def url(self) -> str:
         return f"/uploads/{self.id}/file"
 
-    def get_base64_data(self, user: "User", drive_service=None) -> Optional[str]:
-        """
-        Returns the media as a base64 string ready for frontend.
-        Returns None if fetching fails.
-        """
-        if not self.external_id:
-            return None
 
-        try:
-            if not drive_service:
-                from utils.drive import get_drive_service
 
-                drive_service = get_drive_service(user)
-
-            from googleapiclient.http import MediaIoBaseDownload
-            import io
-            import base64
-
-            request = drive_service.files().get_media(fileId=self.external_id)
-            file_stream = io.BytesIO()
-            downloader = MediaIoBaseDownload(file_stream, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-
-            file_stream.seek(0)
-            encoded = base64.b64encode(file_stream.read()).decode()
-            return f"data:{self.mime_type};base64,{encoded}"
-        except Exception:
-            # Fail gracefully
-            return None
-
-    def to_media_read(self, user: "User", drive_service=None) -> "MediaRead":
-        """Convert Media to MediaRead with base64 data"""
+    def to_media_read(self) -> "MediaRead":
+        """Convert Media to MediaRead"""
         return MediaRead(
             id=self.id,
             filename=self.filename,
@@ -122,5 +96,4 @@ class Media(AppBaseModel, table=True):
             uploaded_by_id=self.uploaded_by_id,
             created_at=self.created_at.isoformat() if self.created_at else None,
             updated_at=self.updated_at.isoformat() if self.updated_at else None,
-            data=self.get_base64_data(user, drive_service),
         )

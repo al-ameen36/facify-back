@@ -24,13 +24,14 @@ from utils.face import (
 )
 from utils.media import upload_file, save_file_to_db, delete_media_and_file
 from models import MediaEmbedding
-from googleapiclient.http import MediaIoBaseDownload
+
 
 
 load_dotenv()
 
 FACE_MODEL_NAME = os.environ.get("FACE_MODEL_NAME")
 FACE_MODEL_BACKEND = os.environ.get("FACE_MODEL_BACKEND")
+FACE_API_URL = os.environ.get("FACE_API_URL")
 
 # Allowed MIME types
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -183,9 +184,12 @@ def get_user_uploads(
 
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
+    # Convert to MediaRead objects
+    media_reads = [media.to_media_read() for media in user_uploads]
+
     return PaginatedResponse[MediaRead](
         message="User uploads retrieved successfully",
-        data=user_uploads,
+        data=media_reads,
         pagination=Pagination(
             total=total, page=page, per_page=per_page, total_pages=total_pages
         ),
@@ -253,9 +257,12 @@ async def get_event_media(
 
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
+    # Convert to MediaRead objects
+    media_reads = [media.to_media_read() for media in event_media]
+
     return PaginatedResponse[MediaRead](
         message="Event media retrieved successfully",
-        data=event_media,
+        data=media_reads,
         pagination=Pagination(
             total=total,
             page=page,
@@ -270,6 +277,11 @@ def generate_embeddings_background(media_id: int, external_url: str, external_id
     from db import get_session
     import requests
     from datetime import datetime
+    
+    # Validate configuration
+    if not FACE_API_URL:
+        print(f"FACE_API_URL not configured, skipping embeddings for media_id {media_id}")
+        return
     
     session = next(get_session())
     
@@ -287,14 +299,15 @@ def generate_embeddings_background(media_id: int, external_url: str, external_id
         media_embedding.status = "processing"
         session.commit()
         
-        # Download the image from external URL
-        response = requests.get(external_url)
+        # Download the image from external URL with timeout
+        response = requests.get(external_url, timeout=30)
         response.raise_for_status()
         
-        # Call face API
+        # Call face API with timeout
         face_response = requests.post(
             f"{FACE_API_URL}/embed",
             files={"file": ("image", response.content, "image/jpeg")},
+            timeout=60
         )
         face_response.raise_for_status()
         results = face_response.json()
@@ -316,6 +329,14 @@ def generate_embeddings_background(media_id: int, external_url: str, external_id
         session.commit()
         print(f"Successfully processed embeddings for media_id {media_id}: {len(embeddings)} faces found")
         
+    except requests.RequestException as e:
+        # Handle network errors specifically
+        if 'media_embedding' in locals():
+            media_embedding.status = "failed"
+            media_embedding.error_message = f"Network error: {str(e)}"
+            media_embedding.processed_at = datetime.utcnow()
+            session.commit()
+        print(f"Network error processing embeddings for media_id {media_id}: {str(e)}")
     except Exception as e:
         # Update status to failed
         if 'media_embedding' in locals():

@@ -36,29 +36,24 @@ def upload_file(
     usage_type: str,
     use_unique_file_name: bool = True,
 ):
-    file_path = save_upload_file_to_temp(file)
-
-    try:
-        with open(file_path, "rb") as f:
-            upload = imagekit.upload_file(
-                file=f,
-                file_name=file.filename or "uploaded_file",
-                options=UploadFileRequestOptions(
-                    use_unique_file_name=use_unique_file_name,
-                    tags=[
-                        owner_type,
-                        f"owner-{owner_id}",
-                        f"creator-{user.id}",
-                        f"usage-{usage_type}",
-                    ],
-                ),
-            )
-    finally:
-        # Clean up temp file
-        try:
-            os.remove(file_path)
-        except OSError:
-            pass  # File might already be deleted
+    # Stream directly to ImageKit without temp file
+    file.file.seek(0)
+    file_content = file.file.read()
+    file.file.seek(0)  # Reset for potential reuse
+    
+    upload = imagekit.upload_file(
+        file=file_content,
+        file_name=file.filename or "uploaded_file",
+        options=UploadFileRequestOptions(
+            use_unique_file_name=use_unique_file_name,
+            tags=[
+                owner_type,
+                f"owner-{owner_id}",
+                f"creator-{user.id}",
+                f"usage-{usage_type}",
+            ],
+        ),
+    )
 
     raw = upload.response_metadata.raw
 
