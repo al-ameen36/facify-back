@@ -124,7 +124,7 @@ async def update_event_route(
 @router.get("", response_model=PaginatedResponse[EventRead])
 async def read_my_events_filtered(
     status: Optional[str] = Query(
-        None, regex="^(current|past|upcoming)$", description="Filter events: past (ended), upcoming (includes current/ongoing events), or current (only ongoing events)"
+        None, regex="^(past|upcoming)$", description="Filter events: past (ended), upcoming (includes current/ongoing events), or current (only ongoing events)"
     ),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
@@ -368,6 +368,66 @@ async def get_single_event(
         message="Event retrieved successfully", data=event_dict
     )
 
+
+
+@router.delete("/{event_id}", response_model=dict)
+async def delete_event(
+    event_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Delete an event and all associated data.
+    Only the event creator can delete the event.
+    """
+    # Get the event
+    event = session.get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Only event creator can delete the event
+    if event.created_by_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the event creator can delete this event")
+    
+    try:
+        # Import here to avoid circular imports
+        from models import MediaUsage, Media, ContentOwnerType
+        from utils.media import delete_media_and_file
+        
+        # 1. Delete all media associated with this event
+        media_usages = session.exec(
+            select(MediaUsage).where(
+                MediaUsage.owner_type == ContentOwnerType.EVENT,
+                MediaUsage.owner_id == event_id
+            )
+        ).all()
+        
+        for usage in media_usages:
+            if usage.media:
+                delete_media_and_file(session, usage.media)
+        
+        # 2. Delete all event participants
+        participants = session.exec(
+            select(EventParticipant).where(EventParticipant.event_id == event_id)
+        ).all()
+        
+        for participant in participants:
+            session.delete(participant)
+        
+        # 3. Delete the event itself
+        session.delete(event)
+        session.commit()
+        
+        return {
+            "message": "Event deleted successfully",
+            "event_id": event_id,
+            "deleted_participants": len(participants),
+            "deleted_media": len(media_usages)
+        }
+        
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete event: {str(e)}")
 
 
 @router.post("/{event_id}/participants/{user_id}/status")
