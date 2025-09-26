@@ -11,6 +11,7 @@ class MediaRead(SQLModel):
     filename: str
     original_filename: Optional[str] = None
     file_size: Optional[int] = None
+    url: str
     mime_type: Optional[str] = None
     duration: Optional[float] = None
     uploaded_by_id: Optional[int] = None
@@ -91,6 +92,7 @@ class Media(AppBaseModel, table=True):
             filename=self.filename,
             original_filename=self.original_filename,
             file_size=self.file_size,
+            url=self.external_url,
             mime_type=self.mime_type,
             duration=self.duration,
             uploaded_by_id=self.uploaded_by_id,

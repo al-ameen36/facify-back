@@ -36,13 +36,34 @@ def upload_file(
     usage_type: str,
     use_unique_file_name: bool = True,
 ):
-    # Stream directly to ImageKit without temp file
+    # Hybrid approach: choose strategy based on file size
+    MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB threshold
+    
+    # Get file size
+    file.file.seek(0, 2)  # Seek to end
+    file_size = file.file.tell()
+    file.file.seek(0)  # Reset to beginning
+    
+    if file_size <= MAX_MEMORY_SIZE:
+        # Small files: use memory approach (faster)
+        return _upload_via_memory(file, user, owner_id, owner_type, usage_type, use_unique_file_name)
+    else:
+        # Large files: use temp file approach (memory efficient)
+        return _upload_via_temp_file(file, user, owner_id, owner_type, usage_type, use_unique_file_name)
+
+
+def _upload_via_memory(file, user, owner_id, owner_type, usage_type, use_unique_file_name):
+    """Upload small files via memory (BytesIO)"""
+    import io
+    
     file.file.seek(0)
     file_content = file.file.read()
-    file.file.seek(0)  # Reset for potential reuse
+    file.file.seek(0)
+    
+    file_stream = io.BytesIO(file_content)
     
     upload = imagekit.upload_file(
-        file=file_content,
+        file=file_stream,
         file_name=file.filename or "uploaded_file",
         options=UploadFileRequestOptions(
             use_unique_file_name=use_unique_file_name,
@@ -54,7 +75,41 @@ def upload_file(
             ],
         ),
     )
+    
+    return _process_upload_response(upload, file)
 
+
+def _upload_via_temp_file(file, user, owner_id, owner_type, usage_type, use_unique_file_name):
+    """Upload large files via temp file (memory efficient)"""
+    file_path = save_upload_file_to_temp(file)
+
+    try:
+        with open(file_path, "rb") as f:
+            upload = imagekit.upload_file(
+                file=f,
+                file_name=file.filename or "uploaded_file",
+                options=UploadFileRequestOptions(
+                    use_unique_file_name=use_unique_file_name,
+                    tags=[
+                        owner_type,
+                        f"owner-{owner_id}",
+                        f"creator-{user.id}",
+                        f"usage-{usage_type}",
+                    ],
+                ),
+            )
+    finally:
+        # Clean up temp file
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+    
+    return _process_upload_response(upload, file)
+
+
+def _process_upload_response(upload, file):
+    """Process ImageKit upload response into Media object"""
     raw = upload.response_metadata.raw
 
     media_data = {
@@ -63,13 +118,13 @@ def upload_file(
         "filename": raw.get("name", "unknown"),
         "original_filename": file.filename,
         "file_size": raw.get("size"),
-        "mime_type": get_mime_type(file.filename),
+        "mime_type": get_mime_type(file.filename or ""),
         "duration": raw.get("duration", 0),
     }
 
-    print(media_data)
-
     return Media(**media_data)
+
+
 
 
 def save_upload_file_to_temp(upload_file: UploadFile) -> str:

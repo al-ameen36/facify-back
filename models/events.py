@@ -1,13 +1,10 @@
 from datetime import datetime
-from models.media import MediaUsage, Media
+from models.media import MediaUsage, Media, MediaRead
 from sqlmodel import SQLModel, Field, Relationship, select
 from typing import List, Optional
 from models.core import AppBaseModel, ContentOwnerType, MediaUsageType
 import random
 import string
-import io
-import base64
-from googleapiclient.http import MediaIoBaseDownload
 
 
 def generate_event_secret() -> str:
@@ -38,7 +35,7 @@ class EventRead(EventBase):
     created_by_id: int
     updated_at: datetime
     created_at: datetime
-    cover_photo: Optional["Media"] = None
+    cover_photo: Optional["MediaRead"] = None
     secret: Optional[str] = None
 
 
@@ -54,7 +51,7 @@ class ParticipantRead(SQLModel):
     id: int
     full_name: str
     username: str
-    photo: Optional["Media"] = None
+    photo: Optional["MediaRead"] = None
     email: str
     status: str
     created_at: datetime
@@ -91,9 +88,9 @@ class Event(AppBaseModel, table=True):
     created_by: Optional["User"] = Relationship(back_populates="events")
     participants: List["User"] = Relationship(back_populates="joined_events")
 
-    def get_cover_photo_media(self, session) -> Optional["Media"]:
+    def get_cover_photo_media(self, session) -> Optional["MediaRead"]:
         """
-        Returns the Media object for the cover photo.
+        Returns the MediaRead object for the cover photo.
         Returns None if no cover photo exists.
         """
         usage = session.exec(
@@ -107,4 +104,4 @@ class Event(AppBaseModel, table=True):
         if not usage or not usage.media:
             return None
 
-        return usage.media
+        return usage.media.to_media_read()

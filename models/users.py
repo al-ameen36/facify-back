@@ -1,7 +1,7 @@
 from pydantic import EmailStr
 from sqlmodel import SQLModel, Field, Relationship, Column, String, Boolean
 from typing import Optional, List
-from models.media import ContentOwnerType, MediaUsage, MediaUsageType, Media
+from models.media import ContentOwnerType, MediaUsage, MediaUsageType, Media, MediaRead
 from datetime import datetime
 
 
@@ -18,7 +18,7 @@ class UserCreate(UserBase):
 
 class UserRead(UserBase):
     id: int
-    profile_picture: Optional["Media"] = None
+    profile_picture: Optional["MediaRead"] = None
     is_drive_connected: Optional[bool] = False
 
     num_joined: int = 0
@@ -83,8 +83,8 @@ class User(SQLModel, table=True):
     drive_token_expiry: Optional[datetime] = None
 
     # Media helper methods
-    def get_profile_picture_media(self, session) -> Optional["Media"]:
-        """Get current profile picture Media object"""
+    def get_profile_picture_media(self, session) -> Optional["MediaRead"]:
+        """Get current profile picture MediaRead object"""
         from sqlmodel import select
 
         usage = session.exec(
@@ -94,7 +94,7 @@ class User(SQLModel, table=True):
                 MediaUsage.usage_type == MediaUsageType.PROFILE_PICTURE,
             )
         ).first()
-        return usage.media if usage else None
+        return usage.media.to_media_read() if usage and usage.media else None
 
     def get_profile_picture_url(self, session) -> Optional[str]:
         """Get current profile picture URL"""
