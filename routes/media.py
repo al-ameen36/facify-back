@@ -72,6 +72,10 @@ async def upload_media(
             if owner.created_by_id != current_user.id:
                 raise HTTPException(403, "Only event creators can upload cover photos")
         elif usage_type == MediaUsageType.GALLERY:
+            # Check if event allows contributions
+            if not owner.allow_contributions:
+                raise HTTPException(403, "This event does not allow media contributions")
+            
             # Event creator or approved participants can upload to gallery
             if owner.created_by_id != current_user.id:
                 participant_check = session.exec(

@@ -36,47 +36,32 @@ def upload_file(
     usage_type: str,
     use_unique_file_name: bool = True,
 ):
-    # Hybrid approach: choose strategy based on file size
-    MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB threshold
+    # File size limit: 50MB for videos, 10MB for images
+    MAX_VIDEO_SIZE = 50 * 1024 * 1024  # 50MB
+    MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
     
     # Get file size
     file.file.seek(0, 2)  # Seek to end
     file_size = file.file.tell()
     file.file.seek(0)  # Reset to beginning
     
-    if file_size <= MAX_MEMORY_SIZE:
-        # Small files: use memory approach (faster)
-        return _upload_via_memory(file, user, owner_id, owner_type, usage_type, use_unique_file_name)
+    # Check file size limits based on content type
+    if file.content_type and file.content_type.startswith('video/'):
+        if file_size > MAX_VIDEO_SIZE:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=413, detail=f"Video file too large. Maximum size is {MAX_VIDEO_SIZE // (1024*1024)}MB")
+    elif file.content_type and file.content_type.startswith('image/'):
+        if file_size > MAX_IMAGE_SIZE:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=413, detail=f"Image file too large. Maximum size is {MAX_IMAGE_SIZE // (1024*1024)}MB")
     else:
-        # Large files: use temp file approach (memory efficient)
-        return _upload_via_temp_file(file, user, owner_id, owner_type, usage_type, use_unique_file_name)
-
-
-def _upload_via_memory(file, user, owner_id, owner_type, usage_type, use_unique_file_name):
-    """Upload small files via memory (BytesIO)"""
-    import io
+        # Default limit for unknown file types
+        if file_size > MAX_IMAGE_SIZE:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_IMAGE_SIZE // (1024*1024)}MB")
     
-    file.file.seek(0)
-    file_content = file.file.read()
-    file.file.seek(0)
-    
-    file_stream = io.BytesIO(file_content)
-    
-    upload = imagekit.upload_file(
-        file=file_stream,
-        file_name=file.filename or "uploaded_file",
-        options=UploadFileRequestOptions(
-            use_unique_file_name=use_unique_file_name,
-            tags=[
-                owner_type,
-                f"owner-{owner_id}",
-                f"creator-{user.id}",
-                f"usage-{usage_type}",
-            ],
-        ),
-    )
-    
-    return _process_upload_response(upload, file)
+    # Always use temp file approach for consistency and memory efficiency
+    return _upload_via_temp_file(file, user, owner_id, owner_type, usage_type, use_unique_file_name)
 
 
 def _upload_via_temp_file(file, user, owner_id, owner_type, usage_type, use_unique_file_name):
