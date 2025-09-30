@@ -39,8 +39,20 @@ def join_event(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    if event.secret and event.secret != body.secret:
-        raise HTTPException(status_code=403, detail="Invalid secret")
+    # Event Status/Time Guards: Prevent joining events that have already ended
+    now = datetime.now(timezone.utc)
+    if event.end_time < now:
+        raise HTTPException(status_code=400, detail="Cannot join an event that has already ended")
+
+    # Event Privacy Guards: Check if event is accessible
+    if event.privacy == "private":
+        # Private events require a secret to join
+        if not event.secret or event.secret != body.secret:
+            raise HTTPException(status_code=403, detail="Invalid secret for private event")
+    elif event.privacy == "public":
+        # Public events don't require a secret, but we still validate if provided
+        if body.secret and event.secret and event.secret != body.secret:
+            raise HTTPException(status_code=403, detail="Invalid secret")
 
     # check if already a participant
     statement = select(EventParticipant).where(
@@ -331,23 +343,29 @@ async def get_single_event(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
     
-    # Check if user is event creator or approved participant
-    if event.created_by_id != current_user.id:
-        participant_check = session.exec(
-            select(EventParticipant).where(
-                EventParticipant.event_id == event_id,
-                EventParticipant.user_id == current_user.id
-            )
-        ).first()
-        
-        if not participant_check:
-            raise HTTPException(status_code=403, detail="You are not a participant of this event")
-        elif participant_check.status == "pending":
-            raise HTTPException(status_code=403, detail="Your participation request is still pending approval")
-        elif participant_check.status == "rejected":
-            raise HTTPException(status_code=403, detail="Your participation request was rejected")
-        elif participant_check.status != "approved":
-            raise HTTPException(status_code=403, detail="Access denied")
+    # Event Privacy Guards: Check access based on privacy setting
+    if event.privacy == "private":
+        # Private events: only creator or approved participants can access
+        if event.created_by_id != current_user.id:
+            participant_check = session.exec(
+                select(EventParticipant).where(
+                    EventParticipant.event_id == event_id,
+                    EventParticipant.user_id == current_user.id
+                )
+            ).first()
+            
+            if not participant_check:
+                raise HTTPException(status_code=403, detail="You are not a participant of this private event")
+            elif participant_check.status == "pending":
+                raise HTTPException(status_code=403, detail="Your participation request is still pending approval")
+            elif participant_check.status == "rejected":
+                raise HTTPException(status_code=403, detail="Your participation request was rejected")
+            elif participant_check.status != "approved":
+                raise HTTPException(status_code=403, detail="Access denied")
+    elif event.privacy == "public":
+        # Public events: anyone can view basic info, but detailed access may require participation
+        # For now, we allow public access to public events
+        pass
 
     event_dict = event.model_dump()
     event_dict["cover_photo"] = event.get_cover_photo_media(session)
@@ -445,6 +463,10 @@ def update_participant_status(
     # Only event creator can update status
     if event.created_by_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Participant Management Guards: Prevent self-approval
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot approve/reject your own participation request")
 
     statement = select(EventParticipant).where(
         EventParticipant.event_id == event_id,
