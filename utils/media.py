@@ -39,32 +39,48 @@ def upload_file(
     # File size limit: 50MB for videos, 10MB for images
     MAX_VIDEO_SIZE = 50 * 1024 * 1024  # 50MB
     MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
-    
+
     # Get file size
     file.file.seek(0, 2)  # Seek to end
     file_size = file.file.tell()
     file.file.seek(0)  # Reset to beginning
-    
+
     # Check file size limits based on content type
-    if file.content_type and file.content_type.startswith('video/'):
+    if file.content_type and file.content_type.startswith("video/"):
         if file_size > MAX_VIDEO_SIZE:
             from fastapi import HTTPException
-            raise HTTPException(status_code=413, detail=f"Video file too large. Maximum size is {MAX_VIDEO_SIZE // (1024*1024)}MB")
-    elif file.content_type and file.content_type.startswith('image/'):
+
+            raise HTTPException(
+                status_code=413,
+                detail=f"Video file too large. Maximum size is {MAX_VIDEO_SIZE // (1024*1024)}MB",
+            )
+    elif file.content_type and file.content_type.startswith("image/"):
         if file_size > MAX_IMAGE_SIZE:
             from fastapi import HTTPException
-            raise HTTPException(status_code=413, detail=f"Image file too large. Maximum size is {MAX_IMAGE_SIZE // (1024*1024)}MB")
+
+            raise HTTPException(
+                status_code=413,
+                detail=f"Image file too large. Maximum size is {MAX_IMAGE_SIZE // (1024*1024)}MB",
+            )
     else:
         # Default limit for unknown file types
         if file_size > MAX_IMAGE_SIZE:
             from fastapi import HTTPException
-            raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_IMAGE_SIZE // (1024*1024)}MB")
-    
+
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size is {MAX_IMAGE_SIZE // (1024*1024)}MB",
+            )
+
     # Always use temp file approach for consistency and memory efficiency
-    return _upload_via_temp_file(file, user, owner_id, owner_type, usage_type, use_unique_file_name)
+    return _upload_via_temp_file(
+        file, user, owner_id, owner_type, usage_type, use_unique_file_name
+    )
 
 
-def _upload_via_temp_file(file, user, owner_id, owner_type, usage_type, use_unique_file_name):
+def _upload_via_temp_file(
+    file, user, owner_id, owner_type, usage_type, use_unique_file_name
+):
     """Upload large files via temp file (memory efficient)"""
     file_path = save_upload_file_to_temp(file)
 
@@ -89,11 +105,11 @@ def _upload_via_temp_file(file, user, owner_id, owner_type, usage_type, use_uniq
             os.remove(file_path)
         except OSError:
             pass
-    
-    return _process_upload_response(upload, file)
+
+    return _process_upload_response(upload, file, user.id)
 
 
-def _process_upload_response(upload, file):
+def _process_upload_response(upload, file, user_id):
     """Process ImageKit upload response into Media object"""
     raw = upload.response_metadata.raw
 
@@ -105,11 +121,10 @@ def _process_upload_response(upload, file):
         "file_size": raw.get("size"),
         "mime_type": get_mime_type(file.filename or ""),
         "duration": raw.get("duration", 0),
+        "uploaded_by_id": user_id,
     }
 
     return Media(**media_data)
-
-
 
 
 def save_upload_file_to_temp(upload_file: UploadFile) -> str:
@@ -166,23 +181,17 @@ def save_file_to_db(
     return media
 
 
-def delete_media_and_file(session: Session, media: Media, user: User = None):
-    """Delete a media row + embedding + usages + ImageKit file."""
+def delete_media_and_file(session: Session, media: Media, user: User):
+    """Delete a media row + usage + embeddings + ImageKit file."""
     if not media:
         return
-
-    # Get usages for this media
-    usages = session.exec(
-        select(MediaUsage).where(MediaUsage.media_id == media.id)
-    ).all()
 
     # Delete from ImageKit
     if media.external_id:
         try:
-            imagekit.delete_file(media.external_id)
+            imagekit.delete_file(file_id=media.external_id)
         except Exception:
-            # Continue with database cleanup even if ImageKit deletion fails
-            pass
+            pass  # file may already be gone
 
     # Delete embeddings
     embeddings = session.exec(
@@ -192,9 +201,12 @@ def delete_media_and_file(session: Session, media: Media, user: User = None):
         session.delete(embedding)
 
     # Delete usages
+    usages = session.exec(
+        select(MediaUsage).where(MediaUsage.media_id == media.id)
+    ).all()
     for usage in usages:
         session.delete(usage)
 
-    # Delete the media itself
+    # Finally delete the media
     session.delete(media)
     session.flush()

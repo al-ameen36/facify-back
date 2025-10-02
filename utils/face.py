@@ -61,31 +61,6 @@ def generate_face_embeddings(file: UploadFile) -> list[list[float]]:
     return embeddings
 
 
-def delete_media_and_file(session: Session, media: Media, user: User):
-    """Delete a media row + usage + Drive file."""
-    if not media:
-        return
-
-    drive_service = get_drive_service(user)
-
-    # Delete from Drive
-    if media.external_id:
-        try:
-            drive_service.files().delete(fileId=media.external_id).execute()
-        except Exception:
-            pass  # file may already be gone
-
-    # Delete usages
-    usages = session.exec(
-        select(MediaUsage).where(MediaUsage.media_id == media.id)
-    ).all()
-    for usage in usages:
-        session.delete(usage)
-
-    session.delete(media)
-    session.flush()
-
-
 def delete_old_face_enrollment(session: Session, user: User):
     """Delete old face embedding + its Drive media/usage."""
     old_embedding = session.exec(

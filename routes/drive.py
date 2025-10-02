@@ -4,7 +4,6 @@ from sqlmodel import Session
 from db import get_session
 from models import User, UserRead
 from utils.users import get_current_user
-from utils.drive import setup_user_drive_structure
 import os
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -68,8 +67,6 @@ async def drive_callback(
     session.add(current_user)
     session.commit()
     session.refresh(current_user)
-
-    setup_user_drive_structure(current_user)
 
     return {
         "message": "Google Drive connected successfully",

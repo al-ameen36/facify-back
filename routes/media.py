@@ -1,7 +1,16 @@
 import os
 import re
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import (
+    APIRouter,
+    Depends,
+    Query,
+    UploadFile,
+    File,
+    Form,
+    HTTPException,
+    BackgroundTasks,
+)
 from sqlmodel import Session, func, select
 from db import get_session
 from models import (
@@ -28,7 +37,6 @@ from utils.media import upload_file, save_file_to_db, delete_media_and_file
 from models import MediaEmbedding
 
 
-
 load_dotenv()
 
 FACE_MODEL_NAME = os.environ.get("FACE_MODEL_NAME")
@@ -52,16 +60,16 @@ def sanitize_filename(filename: str) -> str:
     """Sanitize filename to prevent security issues"""
     if not filename:
         return "unnamed_file"
-    
+
     # Remove path separators and dangerous characters
-    filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+    filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
     # Remove control characters
-    filename = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', filename)
+    filename = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", filename)
     # Limit length
     if len(filename) > 100:
         name, ext = os.path.splitext(filename)
         filename = name[:95] + ext
-    
+
     return filename or "unnamed_file"
 
 
@@ -70,28 +78,30 @@ def check_rate_limits(session: Session, user_id: int) -> None:
     now = datetime.now(timezone.utc)
     hour_ago = now - timedelta(hours=1)
     day_ago = now - timedelta(days=1)
-    
+
     # Check hourly limit
     hourly_uploads = session.exec(
         select(func.count(Media.id)).where(
-            Media.uploaded_by_id == user_id,
-            Media.created_at >= hour_ago
+            Media.uploaded_by_id == user_id, Media.created_at >= hour_ago
         )
     ).one()
-    
+
     if hourly_uploads >= MAX_UPLOADS_PER_HOUR:
-        raise HTTPException(429, f"Rate limit exceeded: Maximum {MAX_UPLOADS_PER_HOUR} uploads per hour")
-    
+        raise HTTPException(
+            429, f"Rate limit exceeded: Maximum {MAX_UPLOADS_PER_HOUR} uploads per hour"
+        )
+
     # Check daily limit
     daily_uploads = session.exec(
         select(func.count(Media.id)).where(
-            Media.uploaded_by_id == user_id,
-            Media.created_at >= day_ago
+            Media.uploaded_by_id == user_id, Media.created_at >= day_ago
         )
     ).one()
-    
+
     if daily_uploads >= MAX_UPLOADS_PER_DAY:
-        raise HTTPException(429, f"Rate limit exceeded: Maximum {MAX_UPLOADS_PER_DAY} uploads per day")
+        raise HTTPException(
+            429, f"Rate limit exceeded: Maximum {MAX_UPLOADS_PER_DAY} uploads per day"
+        )
 
 
 def check_storage_limits(session: Session, user_id: int, new_file_size: int) -> None:
@@ -102,12 +112,15 @@ def check_storage_limits(session: Session, user_id: int, new_file_size: int) -> 
             Media.uploaded_by_id == user_id
         )
     ).one()
-    
+
     max_storage_bytes = MAX_USER_STORAGE_MB * 1024 * 1024
-    
+
     if current_usage + new_file_size > max_storage_bytes:
         current_mb = current_usage / (1024 * 1024)
-        raise HTTPException(413, f"Storage limit exceeded: You have used {current_mb:.1f}MB of {MAX_USER_STORAGE_MB}MB")
+        raise HTTPException(
+            413,
+            f"Storage limit exceeded: You have used {current_mb:.1f}MB of {MAX_USER_STORAGE_MB}MB",
+        )
 
 
 def check_event_media_limits(session: Session, event_id: int) -> None:
@@ -116,15 +129,20 @@ def check_event_media_limits(session: Session, event_id: int) -> None:
         select(func.count(MediaUsage.id)).where(
             MediaUsage.owner_type == ContentOwnerType.EVENT,
             MediaUsage.owner_id == event_id,
-            MediaUsage.usage_type == MediaUsageType.GALLERY
+            MediaUsage.usage_type == MediaUsageType.GALLERY,
         )
     ).one()
-    
+
     if media_count >= MAX_EVENT_MEDIA_COUNT:
-        raise HTTPException(413, f"Event media limit exceeded: Maximum {MAX_EVENT_MEDIA_COUNT} media files per event")
+        raise HTTPException(
+            413,
+            f"Event media limit exceeded: Maximum {MAX_EVENT_MEDIA_COUNT} media files per event",
+        )
 
 
-@router.post("", response_model=Union[SingleItemResponse[Media], SingleItemResponse[UserRead]])
+@router.post(
+    "", response_model=Union[SingleItemResponse[Media], SingleItemResponse[UserRead]]
+)
 async def upload_media(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -141,19 +159,19 @@ async def upload_media(
     """
     # Rate Limiting: Check upload frequency limits
     check_rate_limits(session, current_user.id)
-    
+
     # Content Validation: Sanitize filename
     if file.filename:
         file.filename = sanitize_filename(file.filename)
-    
+
     # Get file size for storage limit checks
     file.file.seek(0, 2)  # Seek to end
     file_size = file.file.tell()
     file.file.seek(0)  # Reset to beginning
-    
+
     # Storage Limits: Check user storage quota
     check_storage_limits(session, current_user.id, file_size)
-    
+
     # --- validate owner ---
     if owner_type == "user":
         owner = session.get(User, owner_id)
@@ -164,13 +182,22 @@ async def upload_media(
         owner = session.get(Event, owner_id)
         if not owner:
             raise HTTPException(404, "Event not found")
-        
+
         # Event State Guards: Prevent uploads to ended events
         from datetime import datetime, timezone
+
         now = datetime.now(timezone.utc)
-        if owner.end_time < now:
-            raise HTTPException(403, "Cannot upload media to an event that has already ended")
-        
+        if owner.end_time:
+            end_time_aware = (
+                owner.end_time.replace(tzinfo=timezone.utc)
+                if owner.end_time.tzinfo is None
+                else owner.end_time
+            )
+            if end_time_aware < now:
+                raise HTTPException(
+                    403, "Cannot upload media to an event that has already ended"
+                )
+
         # For events, check authorization based on usage type
         if usage_type == MediaUsageType.COVER_PHOTO:
             # Only event creator can upload cover photos
@@ -179,24 +206,28 @@ async def upload_media(
         elif usage_type == MediaUsageType.GALLERY:
             # Check if event allows contributions
             if not owner.allow_contributions:
-                raise HTTPException(403, "This event does not allow media contributions")
-            
+                raise HTTPException(
+                    403, "This event does not allow media contributions"
+                )
+
             # Storage Limits: Check event media count limits
             check_event_media_limits(session, owner_id)
-            
+
             # Event creator or approved participants can upload to gallery
             if owner.created_by_id != current_user.id:
                 participant_check = session.exec(
                     select(EventParticipant).where(
                         EventParticipant.event_id == owner_id,
-                        EventParticipant.user_id == current_user.id
+                        EventParticipant.user_id == current_user.id,
                     )
                 ).first()
-                
+
                 if not participant_check:
                     raise HTTPException(403, "You are not a participant of this event")
                 elif participant_check.status == "pending":
-                    raise HTTPException(403, "Your participation request is still pending approval")
+                    raise HTTPException(
+                        403, "Your participation request is still pending approval"
+                    )
                 elif participant_check.status == "rejected":
                     raise HTTPException(403, "Your participation request was rejected")
                 elif participant_check.status != "approved":
@@ -213,14 +244,23 @@ async def upload_media(
 
     # MIME Type Validation: Enforce allowed file types
     if file.content_type:
-        if file.content_type.startswith('image/'):
+        if file.content_type.startswith("image/"):
             if file.content_type not in ALLOWED_IMAGE_TYPES:
-                raise HTTPException(400, f"Unsupported image type: {file.content_type}. Allowed types: {', '.join(ALLOWED_IMAGE_TYPES)}")
-        elif file.content_type.startswith('video/'):
+                raise HTTPException(
+                    400,
+                    f"Unsupported image type: {file.content_type}. Allowed types: {', '.join(ALLOWED_IMAGE_TYPES)}",
+                )
+        elif file.content_type.startswith("video/"):
             if file.content_type not in ALLOWED_VIDEO_TYPES:
-                raise HTTPException(400, f"Unsupported video type: {file.content_type}. Allowed types: {', '.join(ALLOWED_VIDEO_TYPES)}")
+                raise HTTPException(
+                    400,
+                    f"Unsupported video type: {file.content_type}. Allowed types: {', '.join(ALLOWED_VIDEO_TYPES)}",
+                )
         else:
-            raise HTTPException(400, f"Unsupported file type: {file.content_type}. Only images and videos are allowed.")
+            raise HTTPException(
+                400,
+                f"Unsupported file type: {file.content_type}. Only images and videos are allowed.",
+            )
     else:
         raise HTTPException(400, "File content type could not be determined")
 
@@ -265,7 +305,7 @@ async def upload_media(
                 generate_embeddings_background,
                 saved_media.id,
                 uploaded_media.external_url,
-                uploaded_media.external_id
+                uploaded_media.external_id,
             )
 
         # If uploading profile picture, return updated user data
@@ -275,7 +315,7 @@ async def upload_media(
             return SingleItemResponse(
                 data=user_data, message="Profile picture updated successfully"
             )
-        
+
         return SingleItemResponse(
             data=saved_media, message="Successfully uploaded media"
         )
@@ -295,13 +335,24 @@ def get_user_uploads(
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1),
 ):
+    # Count total gallery uploads
     total = session.exec(
-        select(func.count(Media.id)).where(Media.uploaded_by_id == current_user.id)
+        select(func.count(Media.id))
+        .join(MediaUsage, Media.id == MediaUsage.media_id)
+        .where(
+            Media.uploaded_by_id == current_user.id, MediaUsage.usage_type == "gallery"
+        )
     ).one()
+
     offset = (page - 1) * per_page
+
+    # Get gallery uploads with pagination
     user_uploads = session.exec(
         select(Media)
-        .where(Media.uploaded_by_id == current_user.id)
+        .join(MediaUsage, Media.id == MediaUsage.media_id)
+        .where(
+            Media.uploaded_by_id == current_user.id, MediaUsage.usage_type == "gallery"
+        )
         .order_by(Media.created_at.desc())
         .offset(offset)
         .limit(per_page)
@@ -336,7 +387,7 @@ async def get_event_media(
     event = session.get(Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
-    
+
     # Event Privacy Guards: Restrict gallery access based on event privacy
     if event.privacy == "private":
         # Private events: only creator or approved participants can access gallery
@@ -344,16 +395,24 @@ async def get_event_media(
             participant_check = session.exec(
                 select(EventParticipant).where(
                     EventParticipant.event_id == event_id,
-                    EventParticipant.user_id == current_user.id
+                    EventParticipant.user_id == current_user.id,
                 )
             ).first()
-            
+
             if not participant_check:
-                raise HTTPException(status_code=403, detail="You are not a participant of this private event")
+                raise HTTPException(
+                    status_code=403,
+                    detail="You are not a participant of this private event",
+                )
             elif participant_check.status == "pending":
-                raise HTTPException(status_code=403, detail="Your participation request is still pending approval")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Your participation request is still pending approval",
+                )
             elif participant_check.status == "rejected":
-                raise HTTPException(status_code=403, detail="Your participation request was rejected")
+                raise HTTPException(
+                    status_code=403, detail="Your participation request was rejected"
+                )
             elif participant_check.status != "approved":
                 raise HTTPException(status_code=403, detail="Access denied")
     elif event.privacy == "public":
@@ -407,61 +466,65 @@ def generate_embeddings_background(media_id: int, external_url: str, external_id
     from db import get_session
     import requests
     from datetime import datetime
-    
+
     # Validate configuration
     if not FACE_API_URL:
-        print(f"FACE_API_URL not configured, skipping embeddings for media_id {media_id}")
+        print(
+            f"FACE_API_URL not configured, skipping embeddings for media_id {media_id}"
+        )
         return
-    
+
     session = next(get_session())
-    
+
     try:
         # Get the media embedding record
         media_embedding = session.exec(
             select(MediaEmbedding).where(MediaEmbedding.media_id == media_id)
         ).first()
-        
+
         if not media_embedding:
             print(f"No MediaEmbedding found for media_id {media_id}")
             return
-            
+
         # Update status to processing
         media_embedding.status = "processing"
         session.commit()
-        
+
         # Download the image from external URL with timeout
         response = requests.get(external_url, timeout=30)
         response.raise_for_status()
-        
+
         # Call face API with timeout
         face_response = requests.post(
             f"{FACE_API_URL}/embed",
             files={"file": ("image", response.content, "image/jpeg")},
-            timeout=60
+            timeout=60,
         )
         face_response.raise_for_status()
         results = face_response.json()
-        
+
         # Extract embeddings
         embeddings = []
         if isinstance(results, list):
             for r in results:
                 if "embedding" in r:
                     embeddings.append(r["embedding"])
-        
+
         # Update the embedding record
         media_embedding.embeddings = embeddings
         media_embedding.status = "completed" if embeddings else "failed"
         media_embedding.processed_at = datetime.utcnow()
         if not embeddings:
             media_embedding.error_message = "No faces detected"
-            
+
         session.commit()
-        print(f"Successfully processed embeddings for media_id {media_id}: {len(embeddings)} faces found")
-        
+        print(
+            f"Successfully processed embeddings for media_id {media_id}: {len(embeddings)} faces found"
+        )
+
     except requests.RequestException as e:
         # Handle network errors specifically
-        if 'media_embedding' in locals():
+        if "media_embedding" in locals():
             media_embedding.status = "failed"
             media_embedding.error_message = f"Network error: {str(e)}"
             media_embedding.processed_at = datetime.utcnow()
@@ -469,13 +532,13 @@ def generate_embeddings_background(media_id: int, external_url: str, external_id
         print(f"Network error processing embeddings for media_id {media_id}: {str(e)}")
     except Exception as e:
         # Update status to failed
-        if 'media_embedding' in locals():
+        if "media_embedding" in locals():
             media_embedding.status = "failed"
             media_embedding.error_message = str(e)
             media_embedding.processed_at = datetime.utcnow()
             session.commit()
         print(f"Failed to process embeddings for media_id {media_id}: {str(e)}")
-    
+
     finally:
         session.close()
 
@@ -494,48 +557,47 @@ async def delete_media(
     media = session.get(Media, media_id)
     if not media:
         raise HTTPException(status_code=404, detail="Media not found")
-    
+
     # Get media usage to check ownership/permissions
     media_usage = session.exec(
         select(MediaUsage).where(MediaUsage.media_id == media_id)
     ).first()
-    
+
     if not media_usage:
         raise HTTPException(status_code=404, detail="Media usage not found")
-    
+
     # Authorization checks
     can_delete = False
-    
+
     # Check if user uploaded the media
     if media.uploaded_by_id == current_user.id:
         can_delete = True
-    
+
     # Check if user owns the content (event creator for event media)
     elif media_usage.owner_type == ContentOwnerType.EVENT:
         event = session.get(Event, media_usage.owner_id)
         if event and event.created_by_id == current_user.id:
             can_delete = True
-    
+
     # Check if user owns their own profile picture
-    elif media_usage.owner_type == ContentOwnerType.USER and media_usage.owner_id == current_user.id:
+    elif (
+        media_usage.owner_type == ContentOwnerType.USER
+        and media_usage.owner_id == current_user.id
+    ):
         can_delete = True
-    
+
     if not can_delete:
         raise HTTPException(
-            status_code=403, 
-            detail="You don't have permission to delete this media"
+            status_code=403, detail="You don't have permission to delete this media"
         )
-    
+
     try:
         # Delete media and associated files
         delete_media_and_file(session, media, current_user)
         session.commit()
-        
-        return {
-            "message": "Media deleted successfully",
-            "media_id": media_id
-        }
-        
+
+        return {"message": "Media deleted successfully", "media_id": media_id}
+
     except PermissionError as e:
         session.rollback()
         raise HTTPException(status_code=403, detail=str(e))
@@ -552,13 +614,14 @@ def get_embedding_status(
     """Get embedding processing status for debugging"""
     if not current_user.is_admin:
         raise HTTPException(403, "Admin access required")
-    
+
     status_counts = session.exec(
-        select(MediaEmbedding.status, func.count(MediaEmbedding.id))
-        .group_by(MediaEmbedding.status)
+        select(MediaEmbedding.status, func.count(MediaEmbedding.id)).group_by(
+            MediaEmbedding.status
+        )
     ).all()
-    
+
     return {
         "embedding_status": {status: count for status, count in status_counts},
-        "message": "Embedding processing status retrieved"
+        "message": "Embedding processing status retrieved",
     }
