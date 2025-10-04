@@ -15,6 +15,7 @@ load_dotenv()
 PRIVATE_KEY = os.environ.get("IK_PRIVATE_KEY")
 PUBLIC_KEY = os.environ.get("IK_PUBLIC_KEY")
 URL = os.environ.get("IK_URL")
+FACE_MODEL_NAME = os.environ.get("FACE_MODEL_NAME", "ArcFace")
 
 imagekit = ImageKit(private_key=PRIVATE_KEY, public_key=PUBLIC_KEY, url_endpoint=URL)
 
@@ -170,7 +171,7 @@ def save_file_to_db(
 
     media_embedding = MediaEmbedding(
         media_id=media.id,
-        model_name="Facenet",
+        model_name=FACE_MODEL_NAME,
         user_id=(user_id if usage_type == "face_enrollment" else None),
         embeddings=embeddings,
         status="completed" if embeddings else "pending",

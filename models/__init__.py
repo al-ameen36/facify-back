@@ -25,6 +25,8 @@ from .media import (
     MediaRead,
 )
 
+from .face import FaceMatch, UnknownFaceCluster
+
 
 # Rebuild models to resolve forward references
 AppBaseModel.model_rebuild()
@@ -51,6 +53,9 @@ Media.model_rebuild()
 MediaUsage.model_rebuild()
 MediaEmbedding.model_rebuild()
 MediaRead.model_rebuild()
+
+FaceMatch.model_rebuild()
+UnknownFaceCluster.model_rebuild()
 
 
 # Export models
@@ -81,4 +86,7 @@ __all__ = [
     "MediaUsage",
     "MediaUsageType",
     "ContentOwnerType",
+    # Face
+    "FaceMatch",
+    "UnknownFaceCluster",
 ]

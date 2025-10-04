@@ -1,5 +1,5 @@
 from pydantic import EmailStr
-from sqlmodel import SQLModel, Field, Relationship, Column, String, Boolean
+from sqlmodel import SQLModel, Field, Relationship, Column, String, Boolean, Float
 from typing import Optional, List
 from models.media import ContentOwnerType, MediaUsage, MediaUsageType, Media, MediaRead
 from datetime import datetime
@@ -96,50 +96,56 @@ class User(SQLModel, table=True):
         ).first()
         return usage.media.to_media_read() if usage and usage.media else None
 
-    def get_profile_picture_url(self, session) -> Optional[str]:
-        """Get current profile picture URL"""
-        media = self.get_profile_picture_media(session)
-        return media.url if media else None
-
     def to_user_read(self, session) -> "UserRead":
         """Convert User to UserRead with computed fields"""
         from sqlmodel import select, func
-        
+
         # Import models to avoid circular imports
         from models.events import Event, EventParticipant
         from models.media import Media
-        
+
         # Count hosted events
-        num_hosted = session.exec(
-            select(func.count(Event.id)).where(Event.created_by_id == self.id)
-        ).one() or 0
-        
-        # Count joined events (approved participants)  
-        num_joined = session.exec(
-            select(func.count(EventParticipant.id)).where(
-                EventParticipant.user_id == self.id,
-                EventParticipant.status == "approved"
-            )
-        ).one() or 0
-        
+        num_hosted = (
+            session.exec(
+                select(func.count(Event.id)).where(Event.created_by_id == self.id)
+            ).one()
+            or 0
+        )
+
+        # Count joined events (approved participants)
+        num_joined = (
+            session.exec(
+                select(func.count(EventParticipant.id)).where(
+                    EventParticipant.user_id == self.id,
+                    EventParticipant.status == "approved",
+                )
+            ).one()
+            or 0
+        )
+
         # Count uploads
-        num_uploads = session.exec(
-            select(func.count(Media.id)).where(Media.uploaded_by_id == self.id)
-        ).one() or 0
-        
+        num_uploads = (
+            session.exec(
+                select(func.count(Media.id)).where(Media.uploaded_by_id == self.id)
+            ).one()
+            or 0
+        )
+
         # Count photos (images only)
-        num_photos = session.exec(
-            select(func.count(Media.id)).where(
-                Media.uploaded_by_id == self.id,
-                Media.mime_type.like("image/%")
-            )
-        ).one() or 0
-        
+        num_photos = (
+            session.exec(
+                select(func.count(Media.id)).where(
+                    Media.uploaded_by_id == self.id, Media.mime_type.like("image/%")
+                )
+            ).one()
+            or 0
+        )
+
         user_data = UserRead.model_validate(self)
         user_data.profile_picture = self.get_profile_picture_media(session)
         user_data.num_hosted = num_hosted
         user_data.num_joined = num_joined
         user_data.num_uploads = num_uploads
         user_data.num_photos = num_photos
-        
+
         return user_data

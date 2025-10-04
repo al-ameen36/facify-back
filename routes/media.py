@@ -11,7 +11,7 @@ from fastapi import (
     HTTPException,
     BackgroundTasks,
 )
-from sqlmodel import Session, func, select
+from sqlmodel import Session, delete, func, select
 from db import get_session
 from models import (
     User,
@@ -29,12 +29,10 @@ from models import (
 )
 from typing import Optional, Union
 from dotenv import load_dotenv
+from models.face import FaceMatch
 from utils.users import get_current_user
-from utils.face import (
-    generate_face_embeddings,
-)
 from utils.media import upload_file, save_file_to_db, delete_media_and_file
-from models import MediaEmbedding
+from utils.face import generate_embeddings_background
 
 
 load_dotenv()
@@ -184,8 +182,6 @@ async def upload_media(
             raise HTTPException(404, "Event not found")
 
         # Event State Guards: Prevent uploads to ended events
-        from datetime import datetime, timezone
-
         now = datetime.now(timezone.utc)
         if owner.end_time:
             end_time_aware = (
@@ -305,7 +301,6 @@ async def upload_media(
                 generate_embeddings_background,
                 saved_media.id,
                 uploaded_media.external_url,
-                uploaded_media.external_id,
             )
 
         # If uploading profile picture, return updated user data
@@ -461,88 +456,6 @@ async def get_event_media(
     )
 
 
-def generate_embeddings_background(media_id: int, external_url: str, external_id: str):
-    """Background task to generate face embeddings for uploaded media"""
-    from db import get_session
-    import requests
-    from datetime import datetime
-
-    # Validate configuration
-    if not FACE_API_URL:
-        print(
-            f"FACE_API_URL not configured, skipping embeddings for media_id {media_id}"
-        )
-        return
-
-    session = next(get_session())
-
-    try:
-        # Get the media embedding record
-        media_embedding = session.exec(
-            select(MediaEmbedding).where(MediaEmbedding.media_id == media_id)
-        ).first()
-
-        if not media_embedding:
-            print(f"No MediaEmbedding found for media_id {media_id}")
-            return
-
-        # Update status to processing
-        media_embedding.status = "processing"
-        session.commit()
-
-        # Download the image from external URL with timeout
-        response = requests.get(external_url, timeout=30)
-        response.raise_for_status()
-
-        # Call face API with timeout
-        face_response = requests.post(
-            f"{FACE_API_URL}/embed",
-            files={"file": ("image", response.content, "image/jpeg")},
-            timeout=60,
-        )
-        face_response.raise_for_status()
-        results = face_response.json()
-
-        # Extract embeddings
-        embeddings = []
-        if isinstance(results, list):
-            for r in results:
-                if "embedding" in r:
-                    embeddings.append(r["embedding"])
-
-        # Update the embedding record
-        media_embedding.embeddings = embeddings
-        media_embedding.status = "completed" if embeddings else "failed"
-        media_embedding.processed_at = datetime.utcnow()
-        if not embeddings:
-            media_embedding.error_message = "No faces detected"
-
-        session.commit()
-        print(
-            f"Successfully processed embeddings for media_id {media_id}: {len(embeddings)} faces found"
-        )
-
-    except requests.RequestException as e:
-        # Handle network errors specifically
-        if "media_embedding" in locals():
-            media_embedding.status = "failed"
-            media_embedding.error_message = f"Network error: {str(e)}"
-            media_embedding.processed_at = datetime.utcnow()
-            session.commit()
-        print(f"Network error processing embeddings for media_id {media_id}: {str(e)}")
-    except Exception as e:
-        # Update status to failed
-        if "media_embedding" in locals():
-            media_embedding.status = "failed"
-            media_embedding.error_message = str(e)
-            media_embedding.processed_at = datetime.utcnow()
-            session.commit()
-        print(f"Failed to process embeddings for media_id {media_id}: {str(e)}")
-
-    finally:
-        session.close()
-
-
 @router.delete("/{media_id}", response_model=dict)
 async def delete_media(
     media_id: int,
@@ -592,6 +505,10 @@ async def delete_media(
         )
 
     try:
+        # Delete dependent facematch entries
+        session.exec(delete(FaceMatch).where(FaceMatch.media_id == media.id))
+        session.commit()
+
         # Delete media and associated files
         delete_media_and_file(session, media, current_user)
         session.commit()
@@ -604,24 +521,3 @@ async def delete_media(
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to delete media: {str(e)}")
-
-
-@router.get("/embedding-status", response_model=dict)
-def get_embedding_status(
-    current_user: User = Depends(get_current_user),
-    session: Session = Depends(get_session),
-):
-    """Get embedding processing status for debugging"""
-    if not current_user.is_admin:
-        raise HTTPException(403, "Admin access required")
-
-    status_counts = session.exec(
-        select(MediaEmbedding.status, func.count(MediaEmbedding.id)).group_by(
-            MediaEmbedding.status
-        )
-    ).all()
-
-    return {
-        "embedding_status": {status: count for status, count in status_counts},
-        "message": "Embedding processing status retrieved",
-    }
