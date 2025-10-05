@@ -117,9 +117,9 @@ async def refresh_access_token(
         )
 
     user = get_user_by_username(session, username)
-    if not user or user.disabled:
+    if not user:
         revoke_refresh_token(refresh_data.refresh_token)
-        raise HTTPException(status_code=401, detail="User not found or disabled")
+        raise HTTPException(status_code=401, detail="User not found")
 
     new_access_token = create_access_token(user.username)
 

@@ -88,8 +88,6 @@ def decode_token(token: str) -> Optional[dict]:
 
 
 def verify_refresh_token(token: str) -> Optional[str]:
-    if token not in active_refresh_tokens:
-        return None
     payload = decode_token(token)
     if not payload or payload.get("type") != "refresh":
         return None
