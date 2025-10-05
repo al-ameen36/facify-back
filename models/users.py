@@ -1,11 +1,21 @@
 from pydantic import EmailStr
-from sqlmodel import SQLModel, Field, Relationship, Column, String, Boolean, Float
+from sqlmodel import (
+    SQLModel,
+    Field,
+    Relationship,
+    Column,
+    String,
+    Boolean,
+    func,
+    select,
+)
 from typing import Optional, List
-from models.media import ContentOwnerType, MediaUsage, MediaUsageType, Media, MediaRead
+from models.media import Media, MediaRead, MediaEmbedding
+from models.events import EventParticipant
 from datetime import datetime
 
 
-# Types (Pydantic models for API)
+# --- Pydantic Models ---
 class UserBase(SQLModel):
     username: str
     email: EmailStr
@@ -18,9 +28,8 @@ class UserCreate(UserBase):
 
 class UserRead(UserBase):
     id: int
-    profile_picture: Optional["MediaRead"] = None
-    is_drive_connected: Optional[bool] = False
-
+    profile_picture: Optional[MediaRead] = None
+    is_drive_connected: bool = False
     num_joined: int = 0
     num_hosted: int = 0
     num_uploads: int = 0
@@ -59,7 +68,6 @@ class ResetPasswordRequest(SQLModel):
     new_password: str
 
 
-# Database Models
 class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(sa_column=Column(String, unique=True, index=True))
@@ -68,11 +76,20 @@ class User(SQLModel, table=True):
     hashed_password: str
 
     # One-to-one: user → face embedding
-    face_embedding: Optional["MediaEmbedding"] = Relationship(back_populates="user")
+    face_embedding: Optional[MediaEmbedding] = Relationship(
+        back_populates="user", sa_relationship_kwargs={"cascade": "delete"}
+    )
 
+    # One-to-many: user → events (created by)
     events: List["Event"] = Relationship(back_populates="created_by")
-    uploads: List["Media"] = Relationship(back_populates="uploaded_by")
-    joined_events: List["Event"] = Relationship(back_populates="participants")
+
+    # One-to-many: user → media (uploads)
+    uploads: List[Media] = Relationship(back_populates="uploaded_by")
+
+    # Many-to-many: user ↔ events (participants)
+    joined_events: List["Event"] = Relationship(
+        back_populates="participants", link_model=EventParticipant
+    )
 
     # Google OAuth tokens
     is_drive_connected: bool = Field(
@@ -82,10 +99,10 @@ class User(SQLModel, table=True):
     drive_refresh_token: Optional[str] = None
     drive_token_expiry: Optional[datetime] = None
 
-    # Media helper methods
-    def get_profile_picture_media(self, session) -> Optional["MediaRead"]:
+    # --- Helper Methods ---
+    def get_profile_picture_media(self, session) -> Optional[MediaRead]:
         """Get current profile picture MediaRead object"""
-        from sqlmodel import select
+        from models.media import MediaUsage, ContentOwnerType, MediaUsageType
 
         usage = session.exec(
             select(MediaUsage).where(
@@ -96,11 +113,8 @@ class User(SQLModel, table=True):
         ).first()
         return usage.media.to_media_read() if usage and usage.media else None
 
-    def to_user_read(self, session) -> "UserRead":
+    def to_user_read(self, session) -> UserRead:
         """Convert User to UserRead with computed fields"""
-        from sqlmodel import select, func
-
-        # Import models to avoid circular imports
         from models.events import Event, EventParticipant
         from models.media import Media
 
@@ -147,5 +161,4 @@ class User(SQLModel, table=True):
         user_data.num_joined = num_joined
         user_data.num_uploads = num_uploads
         user_data.num_photos = num_photos
-
         return user_data

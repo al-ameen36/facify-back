@@ -1,4 +1,15 @@
-from sqlmodel import Field, Relationship, Column, String, JSON, SQLModel, Index
+from datetime import datetime
+from sqlmodel import (
+    Field,
+    ForeignKey,
+    Integer,
+    Relationship,
+    Column,
+    String,
+    JSON,
+    SQLModel,
+    Index,
+)
 from typing import Optional, List
 from models.core import AppBaseModel, ContentOwnerType, MediaType, MediaUsageType
 
@@ -15,13 +26,13 @@ class MediaRead(SQLModel):
     mime_type: Optional[str] = None
     duration: Optional[float] = None
     uploaded_by_id: Optional[int] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    created_at: Optional[str | datetime] = None
+    updated_at: Optional[str | datetime] = None
 
 
 class MediaUsage(AppBaseModel, table=True):
     """Generic relationship table linking Media to any content type"""
-    
+
     __table_args__ = (
         # Composite indexes for common query patterns
         Index("idx_media_usage_owner_usage", "owner_type", "owner_id", "usage_type"),
@@ -29,32 +40,53 @@ class MediaUsage(AppBaseModel, table=True):
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
-
     owner_type: ContentOwnerType = Field(sa_column=Column(String, index=True))
     owner_id: int = Field(index=True)
     usage_type: MediaUsageType = Field(sa_column=Column(String, index=True))
     media_type: MediaType = Field(sa_column=Column(String, index=True))
-
     # Relationship to Media
-    media_id: int = Field(foreign_key="media.id", unique=True)
+    media_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("media.id", name="fk_mediausage_media_id", ondelete="CASCADE"),
+            nullable=False,
+        )
+    )
     media: "Media" = Relationship(back_populates="usage")
 
 
 class MediaEmbedding(AppBaseModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    media_id: int = Field(foreign_key="media.id")
+    media_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey(
+                "media.id", name="fk_mediaembedding_media_id", ondelete="CASCADE"
+            ),
+            nullable=False,
+        )
+    )
     model_name: str
-    embeddings: Optional[List[List[float]]] = Field(default=None, sa_column=Column(JSON))
-    
+    embeddings: Optional[List[List[float]]] = Field(
+        default=None, sa_column=Column(JSON)
+    )
     # Background processing status
-    status: Optional[str] = Field(default="pending")  # pending, processing, completed, failed
+    status: Optional[str] = Field(
+        default="pending"
+    )  # pending, processing, completed, failed
+    retry_count: int = Field(
+        default=0, sa_column=Column(Integer, server_default="0", nullable=False)
+    )
     processed_at: Optional[str] = None
     error_message: Optional[str] = None
-
     # For user enrollment (one-to-one)
-    user_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    user_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("user.id", name="fk_mediaembedding_user_id", ondelete="CASCADE"),
+        )
+    )
     user: Optional["User"] = Relationship(back_populates="face_embedding")
-
     # Normal case → event photo with multiple embeddings
     media: "Media" = Relationship(back_populates="embeddings")
 
@@ -70,20 +102,24 @@ class Media(AppBaseModel, table=True):
     mime_type: Optional[str] = None
     duration: Optional[float] = None
     external_id: str
-
     # Relationships
     uploaded_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
     uploaded_by: Optional["User"] = Relationship(back_populates="uploads")
-    usage: "MediaUsage" = Relationship(back_populates="media")
-
+    usage: List["MediaUsage"] = Relationship(
+        back_populates="media",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "passive_deletes": True,
+        },
+    )
     # NEW: embeddings for all faces in this media
-    embeddings: List["MediaEmbedding"] = Relationship(back_populates="media")
-
-    @property
-    def url(self) -> str:
-        return f"/uploads/{self.id}/file"
-
-
+    embeddings: List["MediaEmbedding"] = Relationship(
+        back_populates="media",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "passive_deletes": True,
+        },
+    )
 
     def to_media_read(self) -> "MediaRead":
         """Convert Media to MediaRead"""

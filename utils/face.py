@@ -14,6 +14,8 @@ from models import (
     EventParticipant,
     User,
     FaceMatch,
+    ContentOwnerType,
+    MediaUsageType,
 )
 from sklearn.cluster import DBSCAN
 from scipy.spatial.distance import cosine
@@ -23,6 +25,8 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
+from utils.ws import notify_ws
+from fastapi.encoders import jsonable_encoder
 
 
 load_dotenv()
@@ -58,10 +62,6 @@ def generate_embeddings_background(media_id: int, image_url: str):
             print(f"Media {media_id} not found")
             return
 
-        media = session.get(Media, media_id)
-        if not media:
-            return
-
         embedding = MediaEmbedding(
             media_id=media.id, model_name="ArcFace", status="processing"
         )
@@ -70,10 +70,10 @@ def generate_embeddings_background(media_id: int, image_url: str):
         session.refresh(embedding)
 
         try:
-            # 1️⃣ Fetch image from ImageKit (with retries)
+            # Fetch image from ImageKit
             res = safe_request("GET", image_url)
 
-            # 2️⃣ Send to DeepFace server (with retries)
+            # Send to DeepFace / ArcFace server
             response = safe_request(
                 "POST",
                 f"{FACE_API_URL}/embed",
@@ -82,48 +82,73 @@ def generate_embeddings_background(media_id: int, image_url: str):
 
             data = response.json()
 
-            # 3️⃣ Process response
+            # Process response
             if "error" in data:
                 embedding.status = "failed"
                 embedding.error_message = data["error"]
-            else:
-                embeddings = (
-                    [face["embedding"] for face in data]
-                    if isinstance(data, list)
-                    else []
+                session.commit()
+                notify_ws(
+                    media.uploaded_by_id,
+                    {
+                        "type": "embedding_failed",
+                        "media_id": media.id,
+                        "error": data["error"],
+                    },
                 )
-                embedding.embeddings = embeddings
-                embedding.status = "completed"
-                embedding.processed_at = datetime.utcnow().isoformat()
+                return
 
-            session.add(embedding)
+            embeddings = (
+                [face["embedding"] for face in data] if isinstance(data, list) else []
+            )
+            embedding.embeddings = embeddings
+            embedding.status = "completed"
+            embedding.processed_at = datetime.utcnow().isoformat()
             session.commit()
 
-            # 4️⃣ Trigger matching if successful
-            if embedding.status == "completed":
-                match_faces_background(session, media.id, embedding.id)
+            # Notify user: embedding done
+            notify_ws(
+                media.uploaded_by_id,
+                {
+                    "type": "embedding_completed",
+                    "media_id": media.id,
+                    "count": len(embeddings),
+                },
+            )
+
+            # Trigger matching
+            match_faces_background(session, media.id, embedding.id)
 
         except Exception as e:
             embedding.status = "failed"
             embedding.error_message = str(e)
-            session.add(embedding)
             session.commit()
+            notify_ws(
+                media.uploaded_by_id,
+                {
+                    "type": "embedding_failed",
+                    "media_id": media.id,
+                    "error": str(e),
+                },
+            )
 
 
 def match_faces_background(
     session: Session, media_id: int, embedding_id: int, threshold: float = 0.6
 ):
-    """Match detected faces in an uploaded media against all users with known embeddings."""
-    from scipy.spatial.distance import cosine
-    from models import ContentOwnerType, MediaUsageType
+    """Match detected faces in an uploaded media against user embeddings and notify matched users."""
 
-    # 1️⃣ Load media embedding
+    # Load media embedding
     media_embedding = session.get(MediaEmbedding, embedding_id)
     if not media_embedding or not media_embedding.embeddings:
         print(f"[FaceMatch] No embeddings found for MediaEmbedding {embedding_id}")
         return
 
-    # 2️⃣ Identify event context
+    # Load media + usage + event
+    media = session.get(Media, media_id)
+    if not media:
+        print(f"[FaceMatch] Media {media_id} not found")
+        return
+
     usage = session.exec(
         select(MediaUsage).where(MediaUsage.media_id == media_id)
     ).first()
@@ -136,7 +161,7 @@ def match_faces_background(
         print(f"[FaceMatch] No event found for usage owner {usage.owner_id}")
         return
 
-    # 3️⃣ Get approved participants
+    # Get approved participants
     participant_ids = [
         ep.user_id
         for ep in session.exec(
@@ -147,7 +172,7 @@ def match_faces_background(
         ).all()
     ]
 
-    # 4️⃣ Get all users with completed embeddings (profile pictures)
+    # Get all users with completed embeddings (profile pictures)
     users_with_embeddings = session.exec(
         select(User, MediaEmbedding)
         .join(MediaUsage, MediaUsage.owner_id == User.id)
@@ -164,16 +189,16 @@ def match_faces_background(
         print("[FaceMatch] No users with valid embeddings found.")
         return
 
-    # 5️⃣ Compare each detected face embedding against all user embeddings
+    matched_users = set()
+
+    # Match embeddings
     for idx, emb in enumerate(media_embedding.embeddings or []):
-        best_user = None
-        best_distance = 1.0
+        best_user, best_distance = None, 1.0
 
         for user, user_embedding in users_with_embeddings:
             if not user_embedding.embeddings:
                 continue
 
-            # Compare with the first (or average) embedding of the user
             dist = cosine(emb, user_embedding.embeddings[0])
             if dist < best_distance:
                 best_distance = dist
@@ -191,16 +216,39 @@ def match_faces_background(
         )
         session.add(match)
 
-        print(
-            f"[FaceMatch] Face #{idx}: "
-            f"{'Matched ' + best_user.username if is_match else 'Unknown face'} "
-            f"(distance={best_distance:.4f})"
-        )
+        if is_match:
+            matched_users.add(best_user.id)
 
     session.commit()
 
-    # 6️⃣ Cluster unknowns for further analysis
+    # Prepare media payload (safe for WS)
+    media_payload = jsonable_encoder(media)
+
+    # Notify event owner (summary)
+    notify_ws(
+        event.created_by_id,
+        {
+            "type": "face_matching_completed",
+            "media": media_payload,
+            "event_id": event.id,
+            "matched_count": len(matched_users),
+        },
+    )
+
+    # Notify each matched user
+    for uid in matched_users:
+        notify_ws(
+            uid,
+            {
+                "type": "face_match_batch",
+                "event_id": event.id,
+                "media": media_payload,
+            },
+        )
+
+    # Cluster unknown faces
     cluster_unknown_faces_background(session, event.id)
+
     print(f"[FaceMatch] Matching completed for media {media_id}")
 
 
