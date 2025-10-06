@@ -169,15 +169,19 @@ def save_file_to_db(
     session.add(usage)
     session.flush()
 
-    media_embedding = MediaEmbedding(
-        media_id=media.id,
-        model_name=FACE_MODEL_NAME,
-        user_id=(user_id if usage_type == "face_enrollment" else None),
-        embeddings=embeddings,
-        status="completed" if embeddings else "pending",
-    )
-    session.add(media_embedding)
-    session.commit()
+    existing_embedding = session.exec(
+        select(MediaEmbedding).where(MediaEmbedding.media_id == media.id)
+    ).first()
+    if not existing_embedding:
+        media_embedding = MediaEmbedding(
+            media_id=media.id,
+            model_name=FACE_MODEL_NAME,
+            user_id=(user_id if usage_type == "face_enrollment" else None),
+            embeddings=embeddings,
+            status="completed" if embeddings else "pending",
+        )
+        session.add(media_embedding)
+        session.commit()
 
     return media
 

@@ -64,6 +64,7 @@ class MediaEmbedding(AppBaseModel, table=True):
                 "media.id", name="fk_mediaembedding_media_id", ondelete="CASCADE"
             ),
             nullable=False,
+            unique=True,
         )
     )
     model_name: str

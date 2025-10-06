@@ -62,12 +62,21 @@ def generate_embeddings_background(media_id: int, image_url: str):
             print(f"Media {media_id} not found")
             return
 
-        embedding = MediaEmbedding(
-            media_id=media.id, model_name="ArcFace", status="processing"
-        )
-        session.add(embedding)
-        session.commit()
-        session.refresh(embedding)
+        embedding = session.exec(
+            select(MediaEmbedding).where(MediaEmbedding.media_id == media.id)
+        ).first()
+        if not embedding:
+            embedding = MediaEmbedding(
+                media_id=media.id, model_name="ArcFace", status="processing"
+            )
+            session.add(embedding)
+            session.commit()
+            session.refresh(embedding)
+        else:
+            # If embedding exists, update status to processing
+            embedding.status = "processing"
+            embedding.error_message = None
+            session.commit()
 
         try:
             # Fetch image from ImageKit
