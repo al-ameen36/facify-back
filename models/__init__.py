@@ -14,6 +14,7 @@ from .events import (
     EventParticipant,
     JoinEventRequest,
     EventCreateDB,
+    ParticipantRead,
 )
 from .core import AppBaseModel, Pagination, SingleItemResponse, PaginatedResponse
 from .media import (
@@ -48,6 +49,7 @@ EventCreate.model_rebuild()
 EventCreateDB.model_rebuild()
 JoinEventRequest.model_rebuild()
 EventParticipant.model_rebuild()
+ParticipantRead.model_rebuild()
 
 Media.model_rebuild()
 MediaUsage.model_rebuild()
@@ -79,6 +81,7 @@ __all__ = [
     "EventRead" "EventCreateDB",
     "JoinEventRequest",
     "EventParticipant",
+    "ParticipantRead",
     # Media
     "Media",
     "MediaRead",

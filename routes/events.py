@@ -1,10 +1,10 @@
-from datetime import timezone
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import Depends, APIRouter, HTTPException, Query, Body
-from models.events import EventRead, ParticipantRead
 from sqlmodel import Session, func, select, SQLModel
 from models import (
+    EventRead,
+    ParticipantRead,
     Event,
     EventCreate,
     EventCreateDB,
@@ -41,14 +41,19 @@ def join_event(
 
     # Event Status/Time Guards: Prevent joining events that have already ended
     now = datetime.now(timezone.utc)
-    if event.end_time < now:
-        raise HTTPException(status_code=400, detail="Cannot join an event that has already ended")
+    end_time = event.end_time.replace(tzinfo=timezone.utc)
+    if end_time < now:
+        raise HTTPException(
+            status_code=400, detail="Cannot join an event that has already ended"
+        )
 
     # Event Privacy Guards: Check if event is accessible
     if event.privacy == "private":
         # Private events require a secret to join
         if not event.secret or event.secret != body.secret:
-            raise HTTPException(status_code=403, detail="Invalid secret for private event")
+            raise HTTPException(
+                status_code=403, detail="Invalid secret for private event"
+            )
     elif event.privacy == "public":
         # Public events don't require a secret, but we still validate if provided
         if body.secret and event.secret and event.secret != body.secret:
@@ -70,7 +75,10 @@ def join_event(
     session.add(participant)
     session.commit()
 
-    return SingleItemResponse(data=event, message= f"{current_user.username} joined the event (pending approval)")
+    return SingleItemResponse(
+        data=event,
+        message=f"{current_user.username} joined the event (pending approval)",
+    )
 
 
 @router.post("", response_model=SingleItemResponse[EventRead])
@@ -136,7 +144,9 @@ async def update_event_route(
 @router.get("", response_model=PaginatedResponse[EventRead])
 async def read_my_events_filtered(
     status: Optional[str] = Query(
-        None, regex="^(past|upcoming)$", description="Filter events: past (ended), upcoming (includes current/ongoing events), or current (only ongoing events)"
+        None,
+        regex="^(past|upcoming)$",
+        description="Filter events: past (ended), upcoming (includes current/ongoing events), or current (only ongoing events)",
     ),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
@@ -213,22 +223,29 @@ async def get_event_participants(
     event = session.get(Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
-    
+
     # Check if user is event creator or approved participant
     if event.created_by_id != current_user.id:
         participant_check = session.exec(
             select(EventParticipant).where(
                 EventParticipant.event_id == event_id,
-                EventParticipant.user_id == current_user.id
+                EventParticipant.user_id == current_user.id,
             )
         ).first()
-        
+
         if not participant_check:
-            raise HTTPException(status_code=403, detail="You are not a participant of this event")
+            raise HTTPException(
+                status_code=403, detail="You are not a participant of this event"
+            )
         elif participant_check.status == "pending":
-            raise HTTPException(status_code=403, detail="Your participation request is still pending approval")
+            raise HTTPException(
+                status_code=403,
+                detail="Your participation request is still pending approval",
+            )
         elif participant_check.status == "rejected":
-            raise HTTPException(status_code=403, detail="Your participation request was rejected")
+            raise HTTPException(
+                status_code=403, detail="Your participation request was rejected"
+            )
         elif participant_check.status != "approved":
             raise HTTPException(status_code=403, detail="Access denied")
     # Query EventParticipant table for participants of the event
@@ -304,7 +321,9 @@ async def read_my_events(
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1),
 ):
-    total = session.exec(select(func.count(Event.id)).where(Event.created_by_id == current_user.id)).one()
+    total = session.exec(
+        select(func.count(Event.id)).where(Event.created_by_id == current_user.id)
+    ).one()
     offset = (page - 1) * per_page
 
     my_events = session.exec(
@@ -342,7 +361,7 @@ async def get_single_event(
     event = session.get(Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
-    
+
     # Event Privacy Guards: Check access based on privacy setting
     if event.privacy == "private":
         # Private events: only creator or approved participants can access
@@ -350,16 +369,24 @@ async def get_single_event(
             participant_check = session.exec(
                 select(EventParticipant).where(
                     EventParticipant.event_id == event_id,
-                    EventParticipant.user_id == current_user.id
+                    EventParticipant.user_id == current_user.id,
                 )
             ).first()
-            
+
             if not participant_check:
-                raise HTTPException(status_code=403, detail="You are not a participant of this private event")
+                raise HTTPException(
+                    status_code=403,
+                    detail="You are not a participant of this private event",
+                )
             elif participant_check.status == "pending":
-                raise HTTPException(status_code=403, detail="Your participation request is still pending approval")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Your participation request is still pending approval",
+                )
             elif participant_check.status == "rejected":
-                raise HTTPException(status_code=403, detail="Your participation request was rejected")
+                raise HTTPException(
+                    status_code=403, detail="Your participation request was rejected"
+                )
             elif participant_check.status != "approved":
                 raise HTTPException(status_code=403, detail="Access denied")
     elif event.privacy == "public":
@@ -387,7 +414,6 @@ async def get_single_event(
     )
 
 
-
 @router.delete("/{event_id}", response_model=dict)
 async def delete_event(
     event_id: int,
@@ -402,47 +428,49 @@ async def delete_event(
     event = session.get(Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
-    
+
     # Only event creator can delete the event
     if event.created_by_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Only the event creator can delete this event")
-    
+        raise HTTPException(
+            status_code=403, detail="Only the event creator can delete this event"
+        )
+
     try:
         # Import here to avoid circular imports
         from models import MediaUsage, Media, ContentOwnerType
         from utils.media import delete_media_and_file
-        
+
         # 1. Delete all media associated with this event
         media_usages = session.exec(
             select(MediaUsage).where(
                 MediaUsage.owner_type == ContentOwnerType.EVENT,
-                MediaUsage.owner_id == event_id
+                MediaUsage.owner_id == event_id,
             )
         ).all()
-        
+
         for usage in media_usages:
             if usage.media:
                 delete_media_and_file(session, usage.media)
-        
+
         # 2. Delete all event participants
         participants = session.exec(
             select(EventParticipant).where(EventParticipant.event_id == event_id)
         ).all()
-        
+
         for participant in participants:
             session.delete(participant)
-        
+
         # 3. Delete the event itself
         session.delete(event)
         session.commit()
-        
+
         return {
             "message": "Event deleted successfully",
             "event_id": event_id,
             "deleted_participants": len(participants),
-            "deleted_media": len(media_usages)
+            "deleted_media": len(media_usages),
         }
-        
+
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to delete event: {str(e)}")
@@ -466,7 +494,10 @@ def update_participant_status(
 
     # Participant Management Guards: Prevent self-approval
     if user_id == current_user.id:
-        raise HTTPException(status_code=400, detail="You cannot approve/reject your own participation request")
+        raise HTTPException(
+            status_code=400,
+            detail="You cannot approve/reject your own participation request",
+        )
 
     statement = select(EventParticipant).where(
         EventParticipant.event_id == event_id,
