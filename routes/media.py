@@ -510,7 +510,7 @@ async def delete_media(
         session.commit()
 
         # Delete media and associated files
-        delete_media_and_file(session, media, current_user)
+        delete_media_and_file(session, media)
         session.commit()
 
         return {"message": "Media deleted successfully", "media_id": media_id}

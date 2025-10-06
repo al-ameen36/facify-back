@@ -182,7 +182,7 @@ def save_file_to_db(
     return media
 
 
-def delete_media_and_file(session: Session, media: Media, user: User):
+def delete_media_and_file(session: Session, media: Media):
     """Delete a media row + usage + embeddings + ImageKit file."""
     if not media:
         return
