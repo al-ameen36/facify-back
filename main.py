@@ -7,8 +7,6 @@ from sqlmodel import select
 from dotenv import load_dotenv
 import os
 from fastapi.middleware.cors import CORSMiddleware
-from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from routes.users import router as auth_router
 from routes.events import router as event_router
@@ -17,7 +15,6 @@ from routes.drive import router as drive_router
 from routes.face import router as face_router
 from routes.ws import router as ws_router
 from utils.ws import send_ws_message
-from utils.scheduler import retry_failed_embeddings
 
 load_dotenv()
 
@@ -59,21 +56,9 @@ async def lifespan(app: FastAPI):
     else:
         print("✅ Users already exist")
 
-    # 🕒 Initialize and start APScheduler
-    scheduler = AsyncIOScheduler()  # ✅ You must create this first!
-    scheduler.add_job(
-        retry_failed_embeddings,
-        trigger=IntervalTrigger(minutes=10),
-        id="retry_failed_embeddings",
-        replace_existing=True,
-    )
-    scheduler.start()
-    print("🕒 APScheduler started")
-
     try:
         yield  # ✅ Run the app
     finally:
-        scheduler.shutdown(wait=False)
         print("🛑 APScheduler stopped")
         print("Application shutting down")
 

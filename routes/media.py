@@ -30,9 +30,9 @@ from models import (
 from typing import Optional, Union
 from dotenv import load_dotenv
 from models.face import FaceMatch
+from tasks.face import embed_media
 from utils.users import get_current_user
 from utils.media import upload_file, save_file_to_db, delete_media_and_file
-from utils.face import generate_embeddings_background
 
 
 load_dotenv()
@@ -272,7 +272,7 @@ async def upload_media(
             ).first()
 
             if old_usage:
-                delete_media_and_file(session, old_usage.media, current_user)
+                delete_media_and_file(session, old_usage.media)
                 session.commit()
 
         # Upload file first
@@ -297,11 +297,7 @@ async def upload_media(
 
         # Queue embedding generation in background (skip for cover photos)
         if usage_type != MediaUsageType.COVER_PHOTO:
-            background_tasks.add_task(
-                generate_embeddings_background,
-                saved_media.id,
-                uploaded_media.external_url,
-            )
+            embed_media.delay(saved_media.id, uploaded_media.external_url)
 
         # If uploading profile picture, return updated user data
         if usage_type == MediaUsageType.PROFILE_PICTURE and owner_type == "user":
