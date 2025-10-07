@@ -29,7 +29,6 @@ class UserCreate(UserBase):
 class UserRead(UserBase):
     id: int
     profile_picture: Optional[MediaRead] = None
-    is_drive_connected: bool = False
     num_joined: int = 0
     num_hosted: int = 0
     num_uploads: int = 0
@@ -75,7 +74,7 @@ class User(SQLModel, table=True):
     full_name: str
     hashed_password: str
 
-    # One-to-one: user → face embedding
+    # One-to-one: user → face embedding (latest profile picture)
     face_embedding: Optional[MediaEmbedding] = Relationship(
         back_populates="user", sa_relationship_kwargs={"cascade": "delete"}
     )
@@ -90,14 +89,6 @@ class User(SQLModel, table=True):
     joined_events: List["Event"] = Relationship(
         back_populates="participants", link_model=EventParticipant
     )
-
-    # Google OAuth tokens
-    is_drive_connected: bool = Field(
-        default=False, sa_column=Column(Boolean, default=False, nullable=False)
-    )
-    drive_access_token: Optional[str] = None
-    drive_refresh_token: Optional[str] = None
-    drive_token_expiry: Optional[datetime] = None
 
     # --- Helper Methods ---
     def get_profile_picture_media(self, session) -> Optional[MediaRead]:

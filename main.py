@@ -11,10 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from routes.users import router as auth_router
 from routes.events import router as event_router
 from routes.media import router as media_router
-from routes.drive import router as drive_router
 from routes.face import router as face_router
 from routes.ws import router as ws_router
-from utils.ws import send_ws_message
 
 load_dotenv()
 
@@ -59,7 +57,6 @@ async def lifespan(app: FastAPI):
     try:
         yield  # ✅ Run the app
     finally:
-        print("🛑 APScheduler stopped")
         print("Application shutting down")
 
 
@@ -80,14 +77,12 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(event_router)
 app.include_router(media_router)
-app.include_router(drive_router)
 app.include_router(face_router)
 app.include_router(ws_router)
 
 
 @app.get("/")
 async def root():
-    await send_ws_message(1, {"test": "test"})
     return {"message": "Authentication API with SQLModel is running!"}
 
 

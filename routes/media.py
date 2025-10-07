@@ -142,7 +142,6 @@ def check_event_media_limits(session: Session, event_id: int) -> None:
     "", response_model=Union[SingleItemResponse[Media], SingleItemResponse[UserRead]]
 )
 async def upload_media(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     owner_id: int = Form(...),
     owner_type: str = Form(...),
@@ -271,8 +270,9 @@ async def upload_media(
                 )
             ).first()
 
-            if old_usage:
-                delete_media_and_file(session, old_usage.media)
+            if old_usage and usage_type == MediaUsageType.PROFILE_PICTURE:
+                old_usage.usage_type = MediaUsageType.PROFILE_PICTURE_ARCHIVED
+                session.add(old_usage)
                 session.commit()
 
         # Upload file first

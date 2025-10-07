@@ -67,11 +67,14 @@ def generate_embeddings_background(media_id: int, image_url: str):
         ).first()
         if not embedding:
             embedding = MediaEmbedding(
-                media_id=media.id, model_name="ArcFace", status="processing"
+                media_id=media.id,
+                model_name="ArcFace",
+                status="processing",
             )
             session.add(embedding)
             session.commit()
             session.refresh(embedding)
+
         else:
             # If embedding exists, update status to processing
             embedding.status = "processing"
@@ -112,6 +115,7 @@ def generate_embeddings_background(media_id: int, image_url: str):
             embedding.embeddings = embeddings
             embedding.status = "completed"
             embedding.processed_at = datetime.utcnow().isoformat()
+            media.face_count = len(embedding.embeddings)
             session.commit()
 
             # Notify user: embedding done
@@ -145,14 +149,13 @@ def match_faces_background(
     session: Session, media_id: int, embedding_id: int, threshold: float = 0.6
 ):
     """Match detected faces in an uploaded media against user embeddings and notify matched users."""
-
     # Load media embedding
     media_embedding = session.get(MediaEmbedding, embedding_id)
     if not media_embedding or not media_embedding.embeddings:
         print(f"[FaceMatch] No embeddings found for MediaEmbedding {embedding_id}")
         return
 
-    # Load media + usage + event
+    # Load media + usage
     media = session.get(Media, media_id)
     if not media:
         print(f"[FaceMatch] Media {media_id} not found")
@@ -165,6 +168,17 @@ def match_faces_background(
         print(f"[FaceMatch] No usage record found for media {media_id}")
         return
 
+    # Skip face matching for non-event media (e.g., profile pictures)
+    if (
+        usage.owner_type != ContentOwnerType.EVENT
+        or usage.usage_type != MediaUsageType.GALLERY
+    ):
+        print(
+            f"[FaceMatch] Skipping face matching for non-event media {media_id} (owner_type={usage.owner_type}, usage_type={usage.usage_type})"
+        )
+        return
+
+    # Load event
     event = session.get(Event, usage.owner_id)
     if not event:
         print(f"[FaceMatch] No event found for usage owner {usage.owner_id}")
@@ -189,7 +203,12 @@ def match_faces_background(
         .join(MediaEmbedding, MediaEmbedding.media_id == Media.id)
         .where(
             MediaUsage.owner_type == ContentOwnerType.USER,
-            MediaUsage.usage_type == MediaUsageType.PROFILE_PICTURE,
+            MediaUsage.usage_type.in_(
+                [
+                    MediaUsageType.PROFILE_PICTURE,
+                    MediaUsageType.PROFILE_PICTURE_ARCHIVED,
+                ]
+            ),
             MediaEmbedding.status == "completed",
         )
     ).all()
@@ -203,18 +222,14 @@ def match_faces_background(
     # Match embeddings
     for idx, emb in enumerate(media_embedding.embeddings or []):
         best_user, best_distance = None, 1.0
-
         for user, user_embedding in users_with_embeddings:
             if not user_embedding.embeddings:
                 continue
-
             dist = cosine(emb, user_embedding.embeddings[0])
             if dist < best_distance:
                 best_distance = dist
                 best_user = user
-
         is_match = best_user is not None and best_distance < threshold
-
         match = FaceMatch(
             event_id=event.id,
             media_id=media_id,
@@ -224,7 +239,6 @@ def match_faces_background(
             is_participant=(best_user.id in participant_ids) if is_match else False,
         )
         session.add(match)
-
         if is_match:
             matched_users.add(best_user.id)
 
@@ -257,7 +271,6 @@ def match_faces_background(
 
     # Cluster unknown faces
     cluster_unknown_faces_background(session, event.id)
-
     print(f"[FaceMatch] Matching completed for media {media_id}")
 
 

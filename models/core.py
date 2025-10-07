@@ -49,5 +49,6 @@ class ContentOwnerType(str, Enum):
 
 class MediaUsageType(str, Enum):
     PROFILE_PICTURE = "profile_picture"
+    PROFILE_PICTURE_ARCHIVED = "profile_picture_archived"
     COVER_PHOTO = "cover_photo"
     GALLERY = "gallery"

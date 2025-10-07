@@ -28,6 +28,7 @@ class MediaRead(SQLModel):
     uploaded_by_id: Optional[int] = None
     created_at: Optional[str | datetime] = None
     updated_at: Optional[str | datetime] = None
+    face_count: Optional[int] = None
 
 
 class MediaUsage(AppBaseModel, table=True):
@@ -81,10 +82,12 @@ class MediaEmbedding(AppBaseModel, table=True):
     processed_at: Optional[str] = None
     error_message: Optional[str] = None
     # For user enrollment (one-to-one)
-    user_id: int = Field(
+    user_id: Optional[int] = Field(
         sa_column=Column(
             Integer,
             ForeignKey("user.id", name="fk_mediaembedding_user_id", ondelete="CASCADE"),
+            nullable=True,
+            default=None,
         )
     )
     user: Optional["User"] = Relationship(back_populates="face_embedding")
@@ -103,6 +106,8 @@ class Media(AppBaseModel, table=True):
     mime_type: Optional[str] = None
     duration: Optional[float] = None
     external_id: str
+    face_count: Optional[int] = Field(default=0)
+
     # Relationships
     uploaded_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
     uploaded_by: Optional["User"] = Relationship(back_populates="uploads")
@@ -135,4 +140,5 @@ class Media(AppBaseModel, table=True):
             uploaded_by_id=self.uploaded_by_id,
             created_at=self.created_at.isoformat() if self.created_at else None,
             updated_at=self.updated_at.isoformat() if self.updated_at else None,
+            face_count=self.face_count,
         )

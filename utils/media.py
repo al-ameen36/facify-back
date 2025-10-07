@@ -10,6 +10,8 @@ from fastapi import UploadFile
 from models import User, Media, MediaUsage, MediaEmbedding
 import mimetypes
 
+from models.core import MediaUsageType
+
 load_dotenv()
 
 PRIVATE_KEY = os.environ.get("IK_PRIVATE_KEY")
@@ -176,7 +178,7 @@ def save_file_to_db(
         media_embedding = MediaEmbedding(
             media_id=media.id,
             model_name=FACE_MODEL_NAME,
-            user_id=(user_id if usage_type == "face_enrollment" else None),
+            user_id=(user_id if MediaUsageType.PROFILE_PICTURE else None),
             embeddings=embeddings,
             status="completed" if embeddings else "pending",
         )
