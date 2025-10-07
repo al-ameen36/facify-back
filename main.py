@@ -11,7 +11,6 @@ from routes.users import router as auth_router
 from routes.events import router as event_router
 from routes.media import router as media_router
 from routes.face import router as face_router
-from tasks.notifications import send_ws_notification_task
 import socketio
 from socket_io import sio
 
@@ -84,7 +83,6 @@ fastapi_app.include_router(face_router)
 # 3️⃣ REST routes
 @fastapi_app.get("/")
 async def root():
-    send_ws_notification_task.delay(2, {"test": 123})
     return {"message": "Authentication API with SQLModel is running!"}
 
 
