@@ -25,8 +25,9 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
-from utils.ws import notify_ws
+from tasks.notifications import send_ws_notification_task
 from fastapi.encoders import jsonable_encoder
+from socket_io import sio
 
 
 load_dotenv()
@@ -55,7 +56,7 @@ def safe_request(method: str, url: str, **kwargs):
         raise NetworkError(str(e))
 
 
-def generate_embeddings_background(media_id: int, image_url: str):
+async def generate_embeddings_background(media_id: int, image_url: str):
     with next(get_session()) as session:
         media = session.get(Media, media_id)
         if not media:
@@ -99,13 +100,15 @@ def generate_embeddings_background(media_id: int, image_url: str):
                 embedding.status = "failed"
                 embedding.error_message = data["error"]
                 session.commit()
-                notify_ws(
-                    media.uploaded_by_id,
+
+                await sio.emit(
+                    "notification",
                     {
                         "type": "embedding_failed",
                         "media_id": media.id,
                         "error": data["error"],
                     },
+                    room=f"user:{media.uploaded_by_id}",
                 )
                 return
 
@@ -119,33 +122,36 @@ def generate_embeddings_background(media_id: int, image_url: str):
             session.commit()
 
             # Notify user: embedding done
-            notify_ws(
-                media.uploaded_by_id,
+            await sio.emit(
+                "notification",
                 {
                     "type": "embedding_completed",
                     "media_id": media.id,
                     "count": len(embeddings),
                 },
+                room=f"user:{media.uploaded_by_id}",
             )
 
             # Trigger matching
-            match_faces_background(session, media.id, embedding.id)
+            await match_faces_background(session, media.id, embedding.id)
 
         except Exception as e:
             embedding.status = "failed"
             embedding.error_message = str(e)
             session.commit()
-            notify_ws(
-                media.uploaded_by_id,
+
+            await sio.emit(
+                "notification",
                 {
                     "type": "embedding_failed",
                     "media_id": media.id,
                     "error": str(e),
                 },
+                room=f"user:{media.uploaded_by_id}",
             )
 
 
-def match_faces_background(
+async def match_faces_background(
     session: Session, media_id: int, embedding_id: int, threshold: float = 0.6
 ):
     """Match detected faces in an uploaded media against user embeddings and notify matched users."""
@@ -248,25 +254,27 @@ def match_faces_background(
     media_payload = jsonable_encoder(media)
 
     # Notify event owner (summary)
-    notify_ws(
-        event.created_by_id,
+    await sio.emit(
+        "notification",
         {
             "type": "face_matching_completed",
             "media": media_payload,
             "event_id": event.id,
             "matched_count": len(matched_users),
         },
+        room=f"user:{event.created_by_id}",
     )
 
     # Notify each matched user
     for uid in matched_users:
-        notify_ws(
-            uid,
+        await sio.emit(
+            "notification",
             {
                 "type": "face_match_batch",
                 "event_id": event.id,
                 "media": media_payload,
             },
+            room=f"user:{uid}",
         )
 
     # Cluster unknown faces

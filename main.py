@@ -1,18 +1,20 @@
+import os
+from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from sqlmodel import select
 from db import create_db_and_tables, get_session
 from models import User
 from utils.users import get_password_hash
-from sqlmodel import select
-from dotenv import load_dotenv
-import os
-from fastapi.middleware.cors import CORSMiddleware
-
 from routes.users import router as auth_router
 from routes.events import router as event_router
 from routes.media import router as media_router
 from routes.face import router as face_router
-from routes.ws import router as ws_router
+from tasks.notifications import send_ws_notification_task
+import socketio
+from socket_io import sio
+
 
 load_dotenv()
 
@@ -22,11 +24,9 @@ DEFAULT_PASSWORD = os.getenv("ADMIN_PASSWORD", "password")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan events"""
     create_db_and_tables()
     print("✅ Database tables created")
 
-    # 🧠 Create default admin + test user
     session = next(get_session())
     existing_admin = session.exec(select(User).where(User.email == ADMIN_EMAIL)).first()
 
@@ -55,17 +55,18 @@ async def lifespan(app: FastAPI):
         print("✅ Users already exist")
 
     try:
-        yield  # ✅ Run the app
+        yield
     finally:
         print("Application shutting down")
 
 
-app = FastAPI(
+# 1️⃣ Create FastAPI app
+fastapi_app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
 
-app.add_middleware(
+fastapi_app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
@@ -73,19 +74,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routes
-app.include_router(auth_router)
-app.include_router(event_router)
-app.include_router(media_router)
-app.include_router(face_router)
-app.include_router(ws_router)
+# 2️⃣ Include routes
+fastapi_app.include_router(auth_router)
+fastapi_app.include_router(event_router)
+fastapi_app.include_router(media_router)
+fastapi_app.include_router(face_router)
 
 
-@app.get("/")
+# 3️⃣ REST routes
+@fastapi_app.get("/")
 async def root():
+    send_ws_notification_task.delay(2, {"test": 123})
     return {"message": "Authentication API with SQLModel is running!"}
 
 
-@app.get("/health")
+@fastapi_app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+# 5️⃣ Combine FastAPI + Socket.IO
+app = socketio.ASGIApp(sio, other_asgi_app=fastapi_app)
