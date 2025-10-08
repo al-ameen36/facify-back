@@ -59,7 +59,7 @@ class ParticipantRead(SQLModel):
     id: int
     full_name: str
     username: str
-    photo: Optional[MediaRead] = None
+    profile_picture: Optional[MediaRead] = None
     email: str
     status: str
     created_at: datetime

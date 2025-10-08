@@ -56,88 +56,50 @@ def safe_request(method: str, url: str, **kwargs):
         raise NetworkError(str(e))
 
 
-async def generate_embeddings_background(media_id: int, image_url: str):
-    with next(get_session()) as session:
-        media = session.get(Media, media_id)
-        if not media:
-            print(f"Media {media_id} not found")
-            return
+async def generate_embeddings_background(
+    session: Session, media_id: int, image_url: str
+):
+    media = session.get(Media, media_id)
+    if not media:
+        print(f"Media {media_id} not found")
+        return
 
-        embedding = session.exec(
-            select(MediaEmbedding).where(MediaEmbedding.media_id == media.id)
-        ).first()
-        if not embedding:
-            embedding = MediaEmbedding(
-                media_id=media.id,
-                model_name="ArcFace",
-                status="processing",
-            )
-            session.add(embedding)
-            session.commit()
-            session.refresh(embedding)
+    embedding = session.exec(
+        select(MediaEmbedding).where(MediaEmbedding.media_id == media.id)
+    ).first()
+    if not embedding:
+        embedding = MediaEmbedding(
+            media_id=media.id,
+            model_name="ArcFace",
+            status="processing",
+        )
+        session.add(embedding)
+        session.commit()
+        session.refresh(embedding)
 
-        else:
-            # If embedding exists, update status to processing
-            embedding.status = "processing"
-            embedding.error_message = None
-            session.commit()
+    else:
+        # If embedding exists, update status to processing
+        embedding.status = "processing"
+        embedding.error_message = None
+        session.commit()
 
-        try:
-            # Fetch image from ImageKit
-            res = safe_request("GET", image_url)
+    try:
+        # Fetch image from ImageKit
+        res = safe_request("GET", image_url)
 
-            # Send to DeepFace / ArcFace server
-            response = safe_request(
-                "POST",
-                f"{FACE_API_URL}/embed",
-                files={"file": ("image.jpg", res.content, "image/jpeg")},
-            )
+        # Send to DeepFace / ArcFace server
+        response = safe_request(
+            "POST",
+            f"{FACE_API_URL}/embed",
+            files={"file": ("image.jpg", res.content, "image/jpeg")},
+        )
 
-            data = response.json()
+        data = response.json()
 
-            # Process response
-            if "error" in data:
-                embedding.status = "failed"
-                embedding.error_message = data["error"]
-                session.commit()
-
-                await sio.emit(
-                    "notification",
-                    {
-                        "type": "embedding_failed",
-                        "media_id": media.id,
-                        "error": data["error"],
-                    },
-                    room=f"user:{media.uploaded_by_id}",
-                )
-                return
-
-            embeddings = (
-                [face["embedding"] for face in data] if isinstance(data, list) else []
-            )
-            embedding.embeddings = embeddings
-            embedding.status = "completed"
-            embedding.processed_at = datetime.utcnow().isoformat()
-            media.face_count = len(embedding.embeddings)
-            session.commit()
-
-            # Notify user: embedding done
-            await sio.emit(
-                "notification",
-                {
-                    "type": "embedding_completed",
-                    "media_id": media.id,
-                    "count": len(embeddings),
-                },
-                room=f"user:{media.uploaded_by_id}",
-            )
-
-            # Trigger matching
-            await match_faces_background(session, media.id, embedding.id)
-
-        except Exception as e:
+        # Process response
+        if "error" in data:
             embedding.status = "failed"
-            embedding.error_message = str(e)
+            embedding.error_message = data["error"]
             session.commit()
 
             await sio.emit(
@@ -145,10 +107,49 @@ async def generate_embeddings_background(media_id: int, image_url: str):
                 {
                     "type": "embedding_failed",
                     "media_id": media.id,
-                    "error": str(e),
+                    "error": data["error"],
                 },
                 room=f"user:{media.uploaded_by_id}",
             )
+            return
+
+        embeddings = (
+            [face["embedding"] for face in data] if isinstance(data, list) else []
+        )
+        embedding.embeddings = embeddings
+        embedding.status = "completed"
+        embedding.processed_at = datetime.utcnow().isoformat()
+        media.face_count = len(embedding.embeddings)
+        session.commit()
+
+        # Notify user: embedding done
+        await sio.emit(
+            "notification",
+            {
+                "type": "embedding_completed",
+                "media_id": media.id,
+                "count": len(embeddings),
+            },
+            room=f"user:{media.uploaded_by_id}",
+        )
+
+        # Trigger matching
+        await match_faces_background(session, media.id, embedding.id)
+
+    except Exception as e:
+        embedding.status = "failed"
+        embedding.error_message = str(e)
+        session.commit()
+
+        await sio.emit(
+            "notification",
+            {
+                "type": "embedding_failed",
+                "media_id": media.id,
+                "error": str(e),
+            },
+            room=f"user:{media.uploaded_by_id}",
+        )
 
 
 async def match_faces_background(

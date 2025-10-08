@@ -23,6 +23,7 @@ from utils.events import (
 )
 from utils.users import get_current_user
 from db import get_session
+from tasks.face import retroactive_match_task
 
 
 router = APIRouter(prefix="/events", tags=["event"])
@@ -267,7 +268,7 @@ async def get_event_participants(
                     id=user.id,
                     full_name=getattr(user, "full_name", user.username),
                     username=user.username,
-                    photo=user.get_profile_picture_media(session),
+                    profile_picture=user.get_profile_picture_media(session),
                     email=user.email,
                     status=ep.status,
                     created_at=ep.created_at,
@@ -511,6 +512,9 @@ def update_participant_status(
     session.add(participant)
     session.commit()
     session.refresh(participant)
+
+    # Trigger retroactive face matching in background when approved
+    retroactive_match_task.delay(user_id, event_id)
 
     return {
         "message": f"Participant {user_id} status updated to {status} for event {event_id}",

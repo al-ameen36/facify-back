@@ -9,7 +9,6 @@ from fastapi import (
     File,
     Form,
     HTTPException,
-    BackgroundTasks,
 )
 from sqlmodel import Session, delete, func, select
 from db import get_session
@@ -33,6 +32,7 @@ from models.face import FaceMatch
 from tasks.face import embed_media
 from utils.users import get_current_user
 from utils.media import upload_file, save_file_to_db, delete_media_and_file
+from tasks.face import retroactive_match_all_events_task
 
 
 load_dotenv()
@@ -303,6 +303,10 @@ async def upload_media(
         if usage_type == MediaUsageType.PROFILE_PICTURE and owner_type == "user":
             session.refresh(current_user)  # Refresh to get latest data
             user_data = current_user.to_user_read(session)
+
+            # Trigger retroactive matching for all events user is in
+            retroactive_match_all_events_task.delay(current_user.id)
+
             return SingleItemResponse(
                 data=user_data, message="Profile picture updated successfully"
             )
