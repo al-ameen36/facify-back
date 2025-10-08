@@ -25,10 +25,11 @@ class MediaRead(SQLModel):
     url: str
     mime_type: Optional[str] = None
     duration: Optional[float] = None
-    uploaded_by_id: Optional[int] = None
+    uploaded_by_id: int
     created_at: Optional[str | datetime] = None
     updated_at: Optional[str | datetime] = None
-    face_count: Optional[int] = None
+    face_count: Optional[int] = 0
+    status: Optional[str] = None
 
 
 class MediaUsage(AppBaseModel, table=True):
@@ -38,6 +39,7 @@ class MediaUsage(AppBaseModel, table=True):
         # Composite indexes for common query patterns
         Index("idx_media_usage_owner_usage", "owner_type", "owner_id", "usage_type"),
         Index("idx_media_usage_media_usage", "media_id", "usage_type"),
+        Index("idx_media_usage_approval", "owner_type", "approval_status"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -45,6 +47,11 @@ class MediaUsage(AppBaseModel, table=True):
     owner_id: int = Field(index=True)
     usage_type: MediaUsageType = Field(sa_column=Column(String, index=True))
     media_type: MediaType = Field(sa_column=Column(String, index=True))
+    approval_status: Optional[str] = Field(
+        default="pending", sa_column=Column(String, index=True)
+    )
+    approved_at: Optional[datetime] = None
+
     # Relationship to Media
     media_id: int = Field(
         sa_column=Column(
@@ -74,7 +81,8 @@ class MediaEmbedding(AppBaseModel, table=True):
     )
     # Background processing status
     status: Optional[str] = Field(
-        default="pending"
+        default="pending",
+        sa_column=Column(String, server_default="pending", nullable=False),
     )  # pending, processing, completed, failed
     retry_count: int = Field(
         default=0, sa_column=Column(Integer, server_default="0", nullable=False)
@@ -141,4 +149,5 @@ class Media(AppBaseModel, table=True):
             created_at=self.created_at.isoformat() if self.created_at else None,
             updated_at=self.updated_at.isoformat() if self.updated_at else None,
             face_count=self.face_count,
+            status=self.usage[0].approval_status,
         )

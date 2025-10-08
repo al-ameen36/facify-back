@@ -260,6 +260,16 @@ async def upload_media(
         raise HTTPException(400, "File content type could not be determined")
 
     try:
+        approval_status = "approved"
+
+        if owner_type == "event" and usage_type == MediaUsageType.GALLERY:
+            event = session.get(Event, owner_id)
+            # Auto-approve if uploaded by event creator, otherwise pending
+            if event.created_by_id == current_user.id or event.auto_approve_uploads:
+                approval_status = "approved"
+            else:
+                approval_status = "pending"
+
         # if cover_photo or profile_picture: delete existing one
         if usage_type in [MediaUsageType.COVER_PHOTO, MediaUsageType.PROFILE_PICTURE]:
             old_usage = session.exec(
@@ -293,6 +303,7 @@ async def upload_media(
             usage_type=usage_type,
             embeddings=None,  # Will be generated in background
             user_id=current_user.id,
+            approval_status=approval_status,
         )
 
         # Queue embedding generation in background (skip for cover photos)
@@ -311,9 +322,15 @@ async def upload_media(
                 data=user_data, message="Profile picture updated successfully"
             )
 
-        return SingleItemResponse(
-            data=saved_media, message="Successfully uploaded media"
-        )
+        # Return appropriate message based on approval status
+        message = "Successfully uploaded media"
+        if owner_type == "event" and usage_type == MediaUsageType.GALLERY:
+            if approval_status == "pending":
+                message = "Media uploaded successfully. Pending event creator approval."
+            else:
+                message = "Media uploaded and approved successfully"
+
+        return SingleItemResponse(data=saved_media, message=message)
 
     except HTTPException:
         session.rollback()
@@ -375,18 +392,30 @@ async def get_event_media(
     media_type: Optional[str] = Query(
         None, description="Filter by media type: image or video"
     ),
+    status: Optional[str] = Query(
+        None, description="Filter by approval status: pending, approved, rejected"
+    ),
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1),
 ):
+    """
+    Get media for an event with optional filters.
+
+    - Regular users: Only see approved media
+    - Event creators: Can see all media, or filter by status
+    """
     # Check if event exists
     event = session.get(Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
+    # Check if current user is the event creator
+    is_event_creator = event.created_by_id == current_user.id
+
     # Event Privacy Guards: Restrict gallery access based on event privacy
     if event.privacy == "private":
         # Private events: only creator or approved participants can access gallery
-        if event.created_by_id != current_user.id:
+        if not is_event_creator:
             participant_check = session.exec(
                 select(EventParticipant).where(
                     EventParticipant.event_id == event_id,
@@ -413,9 +442,27 @@ async def get_event_media(
     elif event.privacy == "public":
         # Public events: anyone can view the gallery (no additional checks needed)
         pass
-    # Base query: select Media via MediaUsage
+
+    # Validate status parameter
+    valid_statuses = ["pending", "approved", "rejected"]
+    if status and status not in valid_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}",
+        )
+
+    # Authorization check for status filter
+    if status and not is_event_creator:
+        # Non-creators can only see approved media
+        if status != "approved":
+            raise HTTPException(
+                status_code=403,
+                detail="Only event creators can view pending or rejected media",
+            )
+
+    # Base query: select Media and MediaUsage
     query = (
-        select(Media)
+        select(Media, MediaUsage)
         .join(MediaUsage, MediaUsage.media_id == Media.id)
         .where(
             MediaUsage.owner_id == event_id,
@@ -424,7 +471,20 @@ async def get_event_media(
         )
     )
 
-    # Apply filter if media_type is specified
+    # Apply approval status filter
+    if status:
+        # Explicit status filter (only for event creators)
+        query = query.where(MediaUsage.approval_status == status)
+    else:
+        # Default behavior based on user role
+        if is_event_creator:
+            # Event creator sees all media if no status specified
+            pass
+        else:
+            # Non-creators only see approved media
+            query = query.where(MediaUsage.approval_status == "approved")
+
+    # Apply media type filter
     if media_type == "image":
         query = query.where(Media.mime_type.like("image/%"))
     elif media_type == "video":
@@ -435,17 +495,21 @@ async def get_event_media(
 
     # Apply pagination
     offset = (page - 1) * per_page
-    event_media = session.exec(
-        query.order_by(Media.id.desc()).offset(offset).limit(per_page)
+    results = session.exec(
+        query.order_by(Media.created_at.desc()).offset(offset).limit(per_page)
     ).all()
 
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
-    # Convert to MediaRead objects
-    media_reads = [media.to_media_read() for media in event_media]
+    # Convert to MediaRead objects with usage info
+    media_reads = [media.to_media_read() for media, usage in results]
+
+    # Build response message
+    status_msg = f" ({status})" if status else ""
+    role_msg = " (creator view)" if is_event_creator and not status else ""
 
     return PaginatedResponse[MediaRead](
-        message="Event media retrieved successfully",
+        message=f"Event media{status_msg}{role_msg} retrieved successfully",
         data=media_reads,
         pagination=Pagination(
             total=total,
@@ -521,3 +585,117 @@ async def delete_media(
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to delete media: {str(e)}")
+
+
+@router.patch("/{media_id}/approve")
+async def approve_media(
+    media_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Approve a pending media upload (event creators only)"""
+
+    media = session.get(Media, media_id)
+    if not media:
+        raise HTTPException(404, "Media not found")
+
+    # Get media usage
+    usage = session.exec(
+        select(MediaUsage).where(MediaUsage.media_id == media_id)
+    ).first()
+
+    if not usage:
+        raise HTTPException(404, "Media usage not found")
+
+    # Only event gallery media needs approval
+    if (
+        usage.owner_type != ContentOwnerType.EVENT
+        or usage.usage_type != MediaUsageType.GALLERY
+    ):
+        raise HTTPException(400, "This media does not require approval")
+
+    # Check if user is event creator
+    event = session.get(Event, usage.owner_id)
+    if not event or event.created_by_id != current_user.id:
+        raise HTTPException(403, "Only event creators can approve media")
+
+    # Check current status
+    if usage.approval_status == "approved":
+        raise HTTPException(400, "Media is already approved")
+
+    # Update approval status
+    usage.approval_status = "approved"
+    usage.approved_at = datetime.now(timezone.utc)
+    session.commit()
+
+    # Notify uploader
+    from socket_io import sio
+
+    await sio.emit(
+        "notification",
+        {
+            "type": "media_approved",
+            "media_id": media.id,
+            "event_id": event.id,
+            "event_name": event.name,
+        },
+        room=f"user:{media.uploaded_by_id}",
+    )
+
+    return SingleItemResponse(
+        data=media.to_media_read(), message="Media approved successfully"
+    )
+
+
+@router.patch("/{media_id}/reject")
+async def reject_media(
+    media_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Reject a pending media upload (event creators only)"""
+
+    media = session.get(Media, media_id)
+    if not media:
+        raise HTTPException(404, "Media not found")
+
+    usage = session.exec(
+        select(MediaUsage).where(MediaUsage.media_id == media_id)
+    ).first()
+
+    if not usage:
+        raise HTTPException(404, "Media usage not found")
+
+    if (
+        usage.owner_type != ContentOwnerType.EVENT
+        or usage.usage_type != MediaUsageType.GALLERY
+    ):
+        raise HTTPException(400, "This media does not require approval")
+
+    event = session.get(Event, usage.owner_id)
+    if not event or event.created_by_id != current_user.id:
+        raise HTTPException(403, "Only event creators can reject media")
+
+    if usage.approval_status == "rejected":
+        raise HTTPException(400, "Media is already rejected")
+
+    # Update rejection status
+    usage.approval_status = "rejected"
+    usage.approved_at = datetime.now(timezone.utc)
+    session.commit()
+
+    # Notify uploader
+    from socket_io import sio
+
+    await sio.emit(
+        "notification",
+        {
+            "type": "media_rejected",
+            "media_id": media.id,
+            "event_id": event.id,
+            "event_name": event.name,
+        },
+        room=f"user:{media.uploaded_by_id}",
+    )
+
+    return SingleItemResponse(data=media.to_media_read(), message="Media rejected")

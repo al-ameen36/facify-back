@@ -157,6 +157,7 @@ def save_file_to_db(
     usage_type: str,
     user_id: int = None,
     embeddings: List[List[float]] = None,
+    approval_status: str = "approved",
 ):
     session.add(media)
     session.flush()
@@ -167,6 +168,7 @@ def save_file_to_db(
         usage_type=usage_type,
         media_type=media.mime_type,
         media_id=media.id,
+        approval_status=approval_status,
     )
     session.add(usage)
     session.flush()
