@@ -6,6 +6,7 @@ import socketio
 sio = socketio.AsyncServer(
     async_mode="asgi",
     cors_allowed_origins="*",
+    cors_credentials=True,
     logger=True,
     engineio_logger=True,
     client_manager=socketio.AsyncRedisManager("redis://localhost:6379/1"),
