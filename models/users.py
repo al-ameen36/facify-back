@@ -93,7 +93,7 @@ class User(SQLModel, table=True):
     # --- Helper Methods ---
     def get_profile_picture_media(self, session) -> Optional[MediaRead]:
         """Get current profile picture MediaRead object"""
-        from models.media import MediaUsage, ContentOwnerType, MediaUsageType
+        from models import MediaUsage, ContentOwnerType, MediaUsageType
 
         usage = session.exec(
             select(MediaUsage).where(
@@ -106,8 +106,14 @@ class User(SQLModel, table=True):
 
     def to_user_read(self, session) -> UserRead:
         """Convert User to UserRead with computed fields"""
-        from models.events import Event, EventParticipant
-        from models.media import Media
+        from models import (
+            Event,
+            EventParticipant,
+            Media,
+            FaceMatch,
+            MediaUsage,
+            MediaUsageType,
+        )
 
         # Count hosted events
         num_hosted = (
@@ -139,8 +145,8 @@ class User(SQLModel, table=True):
         # Count photos (images only)
         num_photos = (
             session.exec(
-                select(func.count(Media.id)).where(
-                    Media.uploaded_by_id == self.id, Media.mime_type.like("image/%")
+                select(func.count(FaceMatch.id)).where(
+                    FaceMatch.matched_user_id == self.id,
                 )
             ).one()
             or 0
