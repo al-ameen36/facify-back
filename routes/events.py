@@ -30,7 +30,7 @@ router = APIRouter(prefix="/events", tags=["event"])
 
 
 @router.post("/{event_id}/join")
-def join_event(
+async def join_event(
     event_id: int,
     body: JoinEventRequest,
     session: Session = Depends(get_session),
@@ -70,11 +70,26 @@ def join_event(
         raise HTTPException(status_code=400, detail="Already a participant")
 
     # By default, participant status is "pending"
+    # status = "approved" if event.auto_approve_participants else "pending"
     participant = EventParticipant(
         event_id=event_id, user_id=current_user.id, status="pending"
     )
     session.add(participant)
     session.commit()
+
+    # Notify Host
+    from socket_io import sio
+
+    await sio.emit(
+        "notification",
+        {
+            "type": "new_event_participant",
+            "data": {
+                "event_id": event.id,
+            },
+        },
+        room=f"user:{event.created_by_id}",
+    )
 
     return SingleItemResponse(
         data=event,
@@ -141,6 +156,28 @@ async def update_event_route(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    # --- Notify Participants ---
+    from socket_io import sio
+
+    # Fetch participant user IDs (except creator if you want)
+    participant_ids = session.exec(
+        select(EventParticipant.user_id).where(EventParticipant.event_id == event.id)
+    ).all()
+
+    for user_id in participant_ids:
+        await sio.emit(
+            "notification",
+            {
+                "type": "event_updated",
+                "data": {
+                    "event_id": event.id,
+                    "event_name": event.name,
+                    "message": f"The event '{event.name}' has been updated.",
+                },
+            },
+            room=f"user:{user_id}",
+        )
 
     return SingleItemResponse[EventRead](
         message="Event updated successfully", data=event
@@ -471,6 +508,30 @@ async def delete_event(
         session.delete(event)
         session.commit()
 
+        # --- Notify Participants ---
+        from socket_io import sio
+
+        # Fetch participant user IDs (except creator if you want)
+        participant_ids = session.exec(
+            select(EventParticipant.user_id).where(
+                EventParticipant.event_id == event.id
+            )
+        ).all()
+
+        for user_id in participant_ids:
+            await sio.emit(
+                "notification",
+                {
+                    "type": "event_deleted",
+                    "data": {
+                        "event_id": event.id,
+                        "event_name": event.name,
+                        "message": f"The event '{event.name}' has been deleted by host.",
+                    },
+                },
+                room=f"user:{user_id}",
+            )
+
         return {
             "message": "Event deleted successfully",
             "event_id": event_id,
@@ -484,7 +545,7 @@ async def delete_event(
 
 
 @router.post("/{event_id}/participants/{user_id}/status")
-def update_participant_status(
+async def update_participant_status(
     event_id: int,
     user_id: int,
     status: str = Body(..., embed=True, regex="^(approved|rejected|pending)$"),
@@ -499,7 +560,7 @@ def update_participant_status(
     if event.created_by_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # Participant Management Guards: Prevent self-approval
+    # Prevent self-approval
     if user_id == current_user.id:
         raise HTTPException(
             status_code=400,
@@ -519,8 +580,26 @@ def update_participant_status(
     session.commit()
     session.refresh(participant)
 
-    # Trigger retroactive face matching in background when approved
-    retroactive_match_task.delay(user_id, event_id)
+    # Trigger background face-matching if approved
+    if status == "approved":
+        retroactive_match_task.delay(user_id, event_id)
+
+    # --- Notify the participant ---
+    from socket_io import sio
+
+    await sio.emit(
+        "notification",
+        {
+            "type": "participant_status_changed",
+            "data": {
+                "event_id": event.id,
+                "event_name": event.name,
+                "status": status,
+                "message": f"Your participation request for '{event.name}' has been {status}.",
+            },
+        },
+        room=f"user:{user_id}",
+    )
 
     return {
         "message": f"Participant {user_id} status updated to {status} for event {event_id}",

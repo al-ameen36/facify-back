@@ -10,6 +10,7 @@ from fastapi import (
     Form,
     HTTPException,
 )
+from socket_io import sio
 from sqlmodel import Session, delete, func, select
 from db import get_session
 from models import (
@@ -306,6 +307,43 @@ async def upload_media(
             approval_status=approval_status,
         )
 
+        # Notify event creator when participant uploads
+        if owner_type == "event" and usage_type == MediaUsageType.GALLERY:
+            event = session.get(Event, owner_id)
+
+            # Skip notifying self
+            if current_user.id != event.created_by_id:
+                if approval_status == "pending":
+                    # Notify creator about pending media
+                    await sio.emit(
+                        "notification",
+                        {
+                            "type": "media_pending_approval",
+                            "data": {
+                                "event_id": event.id,
+                                "event_name": event.name,
+                                "uploader_name": current_user.full_name,
+                                "message": f"{current_user.full_name} uploaded media pending your approval in '{event.name}'.",
+                            },
+                        },
+                        room=f"user:{event.created_by_id}",
+                    )
+                elif approval_status == "approved":
+                    # Auto-approved upload
+                    await sio.emit(
+                        "notification",
+                        {
+                            "type": "new_media_uploaded",
+                            "data": {
+                                "event_id": event.id,
+                                "event_name": event.name,
+                                "uploader_name": current_user.full_name,
+                                "message": f"{current_user.full_name} uploaded new media to '{event.name}'.",
+                            },
+                        },
+                        room=f"user:{event.created_by_id}",
+                    )
+
         # Queue embedding generation in background (skip for cover photos)
         if usage_type != MediaUsageType.COVER_PHOTO:
             embed_media.delay(saved_media.id, uploaded_media.external_url)
@@ -577,6 +615,21 @@ async def delete_media(
         delete_media_and_file(session, media)
         session.commit()
 
+        # Notify uploader if creator deleted their media
+        if media.uploaded_by_id != current_user.id:
+            await sio.emit(
+                "notification",
+                {
+                    "type": "media_deleted",
+                    "data": {
+                        "media_id": media.id,
+                        "event_id": media_usage.owner_id,
+                        "message": f"Your media in event '{event.name}' was removed by the creator.",
+                    },
+                },
+                room=f"user:{media.uploaded_by_id}",
+            )
+
         return {"message": "Media deleted successfully", "media_id": media_id}
 
     except PermissionError as e:
@@ -629,15 +682,16 @@ async def approve_media(
     session.commit()
 
     # Notify uploader
-    from socket_io import sio
-
     await sio.emit(
         "notification",
         {
             "type": "media_approved",
-            "media_id": media.id,
-            "event_id": event.id,
-            "event_name": event.name,
+            "data": {
+                "media_id": media.id,
+                "event_id": event.id,
+                "event_name": event.name,
+                "message": f"Your media in '{event.name}' has been approved!",
+            },
         },
         room=f"user:{media.uploaded_by_id}",
     )
@@ -685,15 +739,16 @@ async def reject_media(
     session.commit()
 
     # Notify uploader
-    from socket_io import sio
-
     await sio.emit(
         "notification",
         {
             "type": "media_rejected",
-            "media_id": media.id,
-            "event_id": event.id,
-            "event_name": event.name,
+            "data": {
+                "media_id": media.id,
+                "event_id": event.id,
+                "event_name": event.name,
+                "message": f"Your media in '{event.name}' has been rejected.",
+            },
         },
         room=f"user:{media.uploaded_by_id}",
     )
