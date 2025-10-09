@@ -88,8 +88,13 @@ async def add_event(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    if get_event_by_name(session, event_data.name):
-        raise HTTPException(status_code=400, detail="Event already exists")
+    existing_event = session.exec(
+        select(Event).where(Event.name == event_data.name)
+    ).first()
+    if existing_event:
+        raise HTTPException(
+            status_code=400, detail="An event with the name '{value}' already exists."
+        )
 
     try:
         event = EventCreateDB(
