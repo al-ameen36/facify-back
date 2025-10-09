@@ -146,8 +146,8 @@ async def update_event_route(
 async def read_my_events_filtered(
     status: Optional[str] = Query(
         None,
-        regex="^(past|upcoming)$",
-        description="Filter events: past (ended), upcoming (includes current/ongoing events), or current (only ongoing events)",
+        pattern="^(ongoing|past|upcoming)$",
+        description="Filter events: ongoing, past (ended), upcoming",
     ),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
@@ -156,7 +156,7 @@ async def read_my_events_filtered(
 ):
     now = datetime.now(timezone.utc)
 
-    # Base query: events created by user OR joined (with DISTINCT to avoid duplicates)
+    # Base query: events created by user OR joined
     query = (
         select(Event)
         .join(EventParticipant, Event.id == EventParticipant.event_id, isouter=True)
@@ -171,11 +171,9 @@ async def read_my_events_filtered(
     if status == "past":
         query = query.filter(Event.end_time < now)
     elif status == "upcoming":
-        # Include both upcoming events (not started) AND current events (started but not ended)
-        query = query.filter(Event.end_time >= now)
-    elif status == "current":
-        # Only current/ongoing events (started but not ended)
-        query = query.filter(Event.start_time < now, Event.end_time >= now)
+        query = query.filter(Event.start_time > now)
+    elif status == "ongoing":
+        query = query.filter(Event.start_time <= now, Event.end_time > now)
 
     total = session.exec(select(func.count()).select_from(query.subquery())).one()
     offset = (page - 1) * per_page
@@ -196,7 +194,10 @@ async def read_my_events_filtered(
         message=f"User {status or 'all'} events retrieved successfully",
         data=events_with_media,
         pagination=Pagination(
-            total=total, page=page, per_page=per_page, total_pages=total_pages
+            total=total,
+            page=page,
+            per_page=per_page,
+            total_pages=total_pages,
         ),
     )
 
