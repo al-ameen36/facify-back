@@ -134,10 +134,14 @@ class User(SQLModel, table=True):
             or 0
         )
 
-        # Count uploads
         num_uploads = (
             session.exec(
-                select(func.count(Media.id)).where(Media.uploaded_by_id == self.id)
+                select(func.count(MediaUsage.id))
+                .join(Media)
+                .where(
+                    Media.uploaded_by_id == self.id,
+                    MediaUsage.usage_type == MediaUsageType.GALLERY,
+                )
             ).one()
             or 0
         )
