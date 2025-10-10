@@ -10,7 +10,7 @@ from fastapi import (
     Form,
     HTTPException,
 )
-from socket_io import sio
+from tasks.notifications import send_notification
 from sqlmodel import Session, delete, func, select
 from db import get_session
 from models import (
@@ -315,33 +315,27 @@ async def upload_media(
             if current_user.id != event.created_by_id:
                 if approval_status == "pending":
                     # Notify creator about pending media
-                    await sio.emit(
-                        "notification",
-                        {
-                            "type": "media_pending_approval",
-                            "data": {
-                                "event_id": event.id,
-                                "event_name": event.name,
-                                "uploader_name": current_user.full_name,
-                                "message": f"{current_user.full_name} uploaded media pending your approval in '{event.name}'.",
-                            },
+                    send_notification.delay(
+                        user_id=event.created_by_id,
+                        event="media_pending_approval",
+                        data={
+                            "event_id": event.id,
+                            "event_name": event.name,
+                            "uploader_name": current_user.full_name,
+                            "message": f"{current_user.full_name} uploaded media pending your approval in '{event.name}'.",
                         },
-                        room=f"user:{event.created_by_id}",
                     )
                 elif approval_status == "approved":
                     # Auto-approved upload
-                    await sio.emit(
-                        "notification",
-                        {
-                            "type": "new_media_uploaded",
-                            "data": {
-                                "event_id": event.id,
-                                "event_name": event.name,
-                                "uploader_name": current_user.full_name,
-                                "message": f"{current_user.full_name} uploaded new media to '{event.name}'.",
-                            },
+                    send_notification.delay(
+                        user_id=event.created_by_id,
+                        event="new_media_uploaded",
+                        data={
+                            "event_id": event.id,
+                            "event_name": event.name,
+                            "uploader_name": current_user.full_name,
+                            "message": f"{current_user.full_name} uploaded new media to '{event.name}'.",
                         },
-                        room=f"user:{event.created_by_id}",
                     )
 
         # Queue embedding generation in background (skip for cover photos)
@@ -617,17 +611,14 @@ async def delete_media(
 
         # Notify uploader if creator deleted their media
         if media.uploaded_by_id != current_user.id:
-            await sio.emit(
-                "notification",
-                {
-                    "type": "media_deleted",
-                    "data": {
-                        "media_id": media.id,
-                        "event_id": media_usage.owner_id,
-                        "message": f"Your media in event '{event.name}' was removed by the creator.",
-                    },
+            send_notification.delay(
+                user_id=media.uploaded_by_id,
+                event="media_deleted",
+                data={
+                    "media_id": media.id,
+                    "event_id": media_usage.owner_id,
+                    "message": f"Your media in event '{event.name}' was removed by the creator.",
                 },
-                room=f"user:{media.uploaded_by_id}",
             )
 
         return {"message": "Media deleted successfully", "media_id": media_id}
@@ -682,18 +673,15 @@ async def approve_media(
     session.commit()
 
     # Notify uploader
-    await sio.emit(
-        "notification",
-        {
-            "type": "media_approved",
-            "data": {
-                "media_id": media.id,
-                "event_id": event.id,
-                "event_name": event.name,
-                "message": f"Your media in '{event.name}' has been approved!",
-            },
+    send_notification.delay(
+        user_id=media.uploaded_by_id,
+        event="media_approved",
+        data={
+            "media_id": media.id,
+            "event_id": event.id,
+            "event_name": event.name,
+            "message": f"Your media in '{event.name}' has been approved!",
         },
-        room=f"user:{media.uploaded_by_id}",
     )
 
     return SingleItemResponse(
@@ -739,10 +727,10 @@ async def reject_media(
     session.commit()
 
     # Notify uploader
-    await sio.emit(
-        "notification",
-        {
-            "type": "media_rejected",
+    send_notification.delay(
+        user_id=media.uploaded_by_id,
+        event="media_rejected",
+        data={
             "data": {
                 "media_id": media.id,
                 "event_id": event.id,
@@ -750,7 +738,6 @@ async def reject_media(
                 "message": f"Your media in '{event.name}' has been rejected.",
             },
         },
-        room=f"user:{media.uploaded_by_id}",
     )
 
     return SingleItemResponse(data=media.to_media_read(), message="Media rejected")

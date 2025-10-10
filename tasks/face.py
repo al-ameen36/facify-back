@@ -1,7 +1,7 @@
 import sys
 import os
 from utils.face import generate_embeddings_background
-from tasks.core import app
+from workers import app
 from db import get_session
 from utils.face_rematch import (
     retroactive_match_user_in_event,

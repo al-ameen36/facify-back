@@ -24,6 +24,7 @@ from utils.events import (
 from utils.users import get_current_user
 from db import get_session
 from tasks.face import retroactive_match_task
+from tasks.notifications import send_notification
 
 
 router = APIRouter(prefix="/events", tags=["event"])
@@ -74,21 +75,20 @@ async def join_event(
     participant = EventParticipant(
         event_id=event_id, user_id=current_user.id, status="pending"
     )
+
     session.add(participant)
     session.commit()
 
     # Notify Host
-    from socket_io import sio
-
-    await sio.emit(
-        "notification",
-        {
-            "type": "new_event_participant",
-            "data": {
-                "event_id": event.id,
-            },
+    participant_user = session.get(User, current_user.id)
+    send_notification.delay(
+        user_id=event.created_by_id,
+        event="new_event_participant",
+        data={
+            "event_id": event.id,
+            "participant_id": participant_user.id,
+            "participant_name": participant_user.full_name,
         },
-        room=f"user:{event.created_by_id}",
     )
 
     return SingleItemResponse(
@@ -166,17 +166,14 @@ async def update_event_route(
     ).all()
 
     for user_id in participant_ids:
-        await sio.emit(
-            "notification",
-            {
-                "type": "event_updated",
-                "data": {
-                    "event_id": event.id,
-                    "event_name": event.name,
-                    "message": f"The event '{event.name}' has been updated.",
-                },
+        send_notification.delay(
+            user_id=user_id,
+            event="event_updated",
+            data={
+                "event_id": event.id,
+                "event_name": event.name,
+                "message": f"The event '{event.name}' has been updated.",
             },
-            room=f"user:{user_id}",
         )
 
     return SingleItemResponse[EventRead](
@@ -519,17 +516,14 @@ async def delete_event(
         ).all()
 
         for user_id in participant_ids:
-            await sio.emit(
-                "notification",
-                {
-                    "type": "event_deleted",
-                    "data": {
-                        "event_id": event.id,
-                        "event_name": event.name,
-                        "message": f"The event '{event.name}' has been deleted by host.",
-                    },
+            send_notification.delay(
+                user_id=user_id,
+                event="event_deleted",
+                data={
+                    "event_id": event.id,
+                    "event_name": event.name,
+                    "message": f"The event '{event.name}' has been deleted by host.",
                 },
-                room=f"user:{user_id}",
             )
 
         return {
@@ -585,20 +579,15 @@ async def update_participant_status(
         retroactive_match_task.delay(user_id, event_id)
 
     # --- Notify the participant ---
-    from socket_io import sio
-
-    await sio.emit(
-        "notification",
-        {
-            "type": "participant_status_changed",
-            "data": {
-                "event_id": event.id,
-                "event_name": event.name,
-                "status": status,
-                "message": f"Your participation request for '{event.name}' has been {status}.",
-            },
+    send_notification.delay(
+        user_id=user_id,
+        event="participant_status_changed",
+        data={
+            "event_id": event.id,
+            "event_name": event.name,
+            "status": status,
+            "message": f"Your participation request for '{event.name}' has been {status}.",
         },
-        room=f"user:{user_id}",
     )
 
     return {

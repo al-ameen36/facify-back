@@ -9,6 +9,7 @@ from models import (
 from sqlmodel import select
 from scipy.spatial.distance import cosine
 from socket_io import sio
+from tasks.notifications import send_notification
 
 
 async def retroactive_match_user_in_event(
@@ -70,17 +71,15 @@ async def retroactive_match_user_in_event(
 
     # Notify user about their matches
     if matched_count > 0:
-        await sio.emit(
-            "notification",
-            {
-                "type": "retroactive_matches_found",
+        send_notification.delay(
+            user_id=user_id,
+            event="retroactive_matches_found",
+            data={
                 "event_id": event_id,
                 "matched_count": matched_count,
                 "media_count": len(matched_media_ids),
             },
-            room=f"user:{user_id}",
         )
-
         print(
             f"[RetroMatch] Found {matched_count} matches for user {user_id} in event {event_id}"
         )
@@ -164,10 +163,10 @@ async def retroactive_match_all_events(session, user_id: int, threshold: float =
 
     # Notify user about their matches
     if total_matched > 0:
-        await sio.emit(
-            "notification",
-            {
-                "type": "retroactive_matches_found_all",
+        send_notification.delay(
+            user_id=user_id,
+            event="retroactive_matches_found_all",
+            data={
                 "matched_count": total_matched,
                 "events_count": len(events_with_matches),
                 "events": [
@@ -175,7 +174,6 @@ async def retroactive_match_all_events(session, user_id: int, threshold: float =
                     for eid, count in events_with_matches.items()
                 ],
             },
-            room=f"user:{user_id}",
         )
 
         print(
