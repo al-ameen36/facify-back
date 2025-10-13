@@ -419,79 +419,78 @@ async def get_event_media(
     )
 
 
-@router.delete("/{media_id}", response_model=dict)
-async def delete_media(
-    media_id: int,
+@router.delete("/bulk", response_model=dict)
+async def bulk_delete_media(
+    media_ids: List[int] = Body(..., embed=True),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
     """
-    Delete a media file and all associated data.
+    Bulk delete media files and all associated data.
     Users can only delete media they uploaded or media from events they created.
     """
-    # Get the media record
-    media = session.get(Media, media_id)
-    if not media:
-        raise HTTPException(status_code=404, detail="Media not found")
+    deleted = []
+    skipped = []
 
-    # Get media usage to check ownership/permissions
-    media_usage = session.exec(
-        select(MediaUsage).where(MediaUsage.media_id == media_id)
-    ).first()
+    for media_id in media_ids:
+        media = session.get(Media, media_id)
+        if not media:
+            skipped.append({"media_id": media_id, "reason": "Media not found"})
+            continue
 
-    if not media_usage:
-        raise HTTPException(status_code=404, detail="Media usage not found")
+        media_usage = session.exec(
+            select(MediaUsage).where(MediaUsage.media_id == media_id)
+        ).first()
+        if not media_usage:
+            skipped.append({"media_id": media_id, "reason": "Media usage not found"})
+            continue
 
-    # Authorization checks
-    can_delete = False
+        can_delete = False
+        event = None
 
-    # Check if user uploaded the media
-    if media.uploaded_by_id == current_user.id:
-        can_delete = True
-
-    # Check if user owns the content (event creator for event media)
-    elif media_usage.owner_type == ContentOwnerType.EVENT:
-        event = session.get(Event, media_usage.owner_id)
-        if event and event.created_by_id == current_user.id:
+        # Permission checks
+        if media.uploaded_by_id == current_user.id:
+            can_delete = True
+        elif media_usage.owner_type == ContentOwnerType.EVENT:
+            event = session.get(Event, media_usage.owner_id)
+            if event and event.created_by_id == current_user.id:
+                can_delete = True
+        elif (
+            media_usage.owner_type == ContentOwnerType.USER
+            and media_usage.owner_id == current_user.id
+        ):
             can_delete = True
 
-    # Check if user owns their own profile picture
-    elif (
-        media_usage.owner_type == ContentOwnerType.USER
-        and media_usage.owner_id == current_user.id
-    ):
-        can_delete = True
+        if not can_delete:
+            skipped.append({"media_id": media_id, "reason": "Permission denied"})
+            continue
 
-    if not can_delete:
-        raise HTTPException(
-            status_code=403, detail="You don't have permission to delete this media"
-        )
+        try:
+            delete_media_and_file(session, media)
+            deleted.append(media_id)
 
-    try:
-        # Delete media and associated files
-        delete_media_and_file(session, media)
-        session.commit()
+            # Notify uploader if creator deleted their media
+            if media.uploaded_by_id != current_user.id and event:
+                send_notification.delay(
+                    user_id=media.uploaded_by_id,
+                    event="media_deleted",
+                    data={
+                        "media_id": media.id,
+                        "event_id": event.id,
+                        "message": f"Your media in event '{event.name}' was removed by the creator.",
+                    },
+                )
 
-        # Notify uploader if creator deleted their media
-        if media.uploaded_by_id != current_user.id:
-            send_notification.delay(
-                user_id=media.uploaded_by_id,
-                event="media_deleted",
-                data={
-                    "media_id": media.id,
-                    "event_id": media_usage.owner_id,
-                    "message": f"Your media in event '{event.name}' was removed by the creator.",
-                },
-            )
+        except Exception as e:
+            skipped.append({"media_id": media_id, "reason": str(e)})
 
-        return {"message": "Media deleted successfully", "media_id": media_id}
+    session.commit()
 
-    except PermissionError as e:
-        session.rollback()
-        raise HTTPException(status_code=403, detail=str(e))
-    except Exception as e:
-        session.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete media: {str(e)}")
+    return {
+        "message": "Bulk media deletion complete",
+        "deleted": deleted,
+        "skipped": skipped,
+    }
 
 
 @router.patch("/{media_id}/approve")
