@@ -24,9 +24,8 @@ from .media import (
     MediaUsageType,
     MediaRead,
 )
-
 from .face import FaceCluster, FaceEmbedding
-
+from .downloads import DownloadJob
 
 # Rebuild models to resolve forward references
 AppBaseModel.model_rebuild()
@@ -56,6 +55,8 @@ MediaRead.model_rebuild()
 
 FaceEmbedding.model_rebuild()
 FaceCluster.model_rebuild()
+
+DownloadJob.model_rebuild()
 
 
 # Export models
@@ -89,4 +90,6 @@ __all__ = [
     # Face
     "FaceEmbedding",
     "FaceCluster",
+    # Downloads
+    "DownloadJob",
 ]

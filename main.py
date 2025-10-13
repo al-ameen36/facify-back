@@ -11,6 +11,7 @@ from routes.users import router as auth_router
 from routes.events import router as event_router
 from routes.media import router as media_router
 from routes.face import router as face_router
+from routes.downloads import router as downloads_router
 import socketio
 from socket_io import sio
 
@@ -78,6 +79,7 @@ fastapi_app.include_router(auth_router)
 fastapi_app.include_router(event_router)
 fastapi_app.include_router(media_router)
 fastapi_app.include_router(face_router)
+fastapi_app.include_router(downloads_router)
 
 
 # 3️⃣ REST routes

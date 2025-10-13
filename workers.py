@@ -6,7 +6,7 @@ import socketio
 app = Celery(
     "embeddings",
     broker="redis://localhost:6379/0",
-    include=["tasks.face", "tasks.notifications"],
+    include=["tasks.face", "tasks.notifications", "tasks.downloads"],
 )
 
 
