@@ -1,10 +1,20 @@
-from typing import Annotated
+from typing import Annotated, List
 from datetime import timedelta
-from fastapi import BackgroundTasks, Depends, APIRouter, HTTPException, Response
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    APIRouter,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+)
 from fastapi.security import OAuth2PasswordRequestForm
-from models.core import SingleItemResponse
 from sqlmodel import Session, select
 from models import (
+    MediaUsageType,
+    SingleItemResponse,
     Token,
     User,
     UserRead,
@@ -13,6 +23,10 @@ from models import (
     ForgotPasswordRequest,
     ResetPasswordRequest,
 )
+from models.core import ContentOwnerType
+from models.media import Media, MediaRead, MediaUsage
+from tasks.face import embed_media
+from utils.media import delete_media_and_file, save_file_to_db, upload_file
 from utils.users import (
     authenticate_user,
     create_access_token,
@@ -60,6 +74,85 @@ async def register_user(
     return SingleItemResponse(
         data=UserRead.model_validate(user), message="User registered successfully"
     )
+
+
+@router.post("/face", response_model=SingleItemResponse[list[MediaRead]])
+async def upload_face_capture(
+    files: List[UploadFile] = File(...),
+    angles: List[str] = Form(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Upload multiple face images with corresponding angles.
+    Replaces any existing image for that same angle.
+    """
+
+    if len(files) != len(angles):
+        raise HTTPException(400, "Each uploaded file must have a matching angle")
+
+    uploaded_media_list = []
+
+    try:
+        for file, angle in zip(files, angles):
+            # Determine usage type
+            usage_type = (
+                MediaUsageType.PROFILE_PICTURE
+                if angle == "center"
+                else MediaUsageType.PROFILE_PICTURE_ANGLE
+            )
+
+            # Find existing media for same user + angle
+            existing_medias = session.exec(
+                select(Media)
+                .join(MediaUsage)
+                .where(
+                    MediaUsage.owner_type == ContentOwnerType.USER,
+                    MediaUsage.owner_id == current_user.id,
+                    MediaUsage.usage_type == usage_type,
+                    Media.tags == angle,
+                )
+            ).all()
+
+            # Delete each safely
+            for old_media in existing_medias:
+                delete_media_and_file(session, old_media)
+            session.commit()
+
+            # Upload new file
+            uploaded = upload_file(
+                file=file,
+                user=current_user,
+                owner_id=current_user.id,
+                owner_type=ContentOwnerType.USER,
+                usage_type=usage_type,
+            )
+
+            # Save in DB with tag = angle
+            saved_media = save_file_to_db(
+                session=session,
+                media=uploaded,
+                owner_id=current_user.id,
+                owner_type=ContentOwnerType.USER,
+                usage_type=usage_type,
+                embeddings=None,
+                user_id=current_user.id,
+                approval_status="approved",
+                tags=angle,
+            )
+            uploaded_media_list.append(saved_media.to_media_read())
+
+            # Trigger embedding generation (async)
+            embed_media.delay(saved_media.id, saved_media.external_url)
+
+        return SingleItemResponse(
+            data=uploaded_media_list,
+            message=f"Successfully uploaded {len(uploaded_media_list)} face captures (replacing existing ones if any).",
+        )
+
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(500, f"Unexpected error: {str(e)}")
 
 
 @router.get("/verify-email")

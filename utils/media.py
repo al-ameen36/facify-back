@@ -1,18 +1,31 @@
+from datetime import datetime, timedelta, timezone
 import os
+import re
 import shutil
 import tempfile
 from typing import List
 from imagekitio import ImageKit
 from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
 from dotenv import load_dotenv
-from sqlmodel import Session, select
-from fastapi import UploadFile
-from models import User, Media, MediaUsage, MediaEmbedding
+from sqlmodel import Session, func, select
+from fastapi import HTTPException, UploadFile
+from models import (
+    User,
+    Media,
+    MediaUsage,
+    FaceEmbedding,
+    ContentOwnerType,
+    MediaUsageType,
+)
 import mimetypes
 
-from models.core import MediaUsageType
-
 load_dotenv()
+
+# Temp
+MAX_UPLOADS_PER_HOUR = 20
+MAX_UPLOADS_PER_DAY = 100
+MAX_USER_STORAGE_MB = 500  # 500MB per user
+MAX_EVENT_MEDIA_COUNT = 200  # 200 media files per event
 
 PRIVATE_KEY = os.environ.get("IK_PRIVATE_KEY")
 PUBLIC_KEY = os.environ.get("IK_PUBLIC_KEY")
@@ -158,7 +171,9 @@ def save_file_to_db(
     user_id: int = None,
     embeddings: List[List[float]] = None,
     approval_status: str = "approved",
+    tags: str = "",
 ):
+    media.tags = tags
     session.add(media)
     session.flush()
 
@@ -169,15 +184,16 @@ def save_file_to_db(
         media_type=media.mime_type,
         media_id=media.id,
         approval_status=approval_status,
+        tags=tags,
     )
     session.add(usage)
     session.flush()
 
     existing_embedding = session.exec(
-        select(MediaEmbedding).where(MediaEmbedding.media_id == media.id)
+        select(FaceEmbedding).where(FaceEmbedding.media_id == media.id)
     ).first()
     if not existing_embedding:
-        media_embedding = MediaEmbedding(
+        media_embedding = FaceEmbedding(
             media_id=media.id,
             model_name=FACE_MODEL_NAME,
             user_id=(user_id if MediaUsageType.PROFILE_PICTURE else None),
@@ -204,7 +220,7 @@ def delete_media_and_file(session: Session, media: Media):
 
     # Delete embeddings
     embeddings = session.exec(
-        select(MediaEmbedding).where(MediaEmbedding.media_id == media.id)
+        select(FaceEmbedding).where(FaceEmbedding.media_id == media.id)
     ).all()
     for embedding in embeddings:
         session.delete(embedding)
@@ -219,3 +235,87 @@ def delete_media_and_file(session: Session, media: Media):
     # Finally delete the media
     session.delete(media)
     session.flush()
+
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize filename to prevent security issues"""
+    if not filename:
+        return "unnamed_file"
+
+    # Remove path separators and dangerous characters
+    filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
+    # Remove control characters
+    filename = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", filename)
+    # Limit length
+    if len(filename) > 100:
+        name, ext = os.path.splitext(filename)
+        filename = name[:95] + ext
+
+    return filename or "unnamed_file"
+
+
+def check_rate_limits(session: Session, user_id: int) -> None:
+    """Check if user has exceeded rate limits"""
+    now = datetime.now(timezone.utc)
+    hour_ago = now - timedelta(hours=1)
+    day_ago = now - timedelta(days=1)
+
+    # Check hourly limit
+    hourly_uploads = session.exec(
+        select(func.count(Media.id)).where(
+            Media.uploaded_by_id == user_id, Media.created_at >= hour_ago
+        )
+    ).one()
+
+    if hourly_uploads >= MAX_UPLOADS_PER_HOUR:
+        raise HTTPException(
+            429, f"Rate limit exceeded: Maximum {MAX_UPLOADS_PER_HOUR} uploads per hour"
+        )
+
+    # Check daily limit
+    daily_uploads = session.exec(
+        select(func.count(Media.id)).where(
+            Media.uploaded_by_id == user_id, Media.created_at >= day_ago
+        )
+    ).one()
+
+    if daily_uploads >= MAX_UPLOADS_PER_DAY:
+        raise HTTPException(
+            429, f"Rate limit exceeded: Maximum {MAX_UPLOADS_PER_DAY} uploads per day"
+        )
+
+
+def check_storage_limits(session: Session, user_id: int, new_file_size: int) -> None:
+    """Check if user has exceeded storage limits"""
+    # Get current user storage usage
+    current_usage = session.exec(
+        select(func.coalesce(func.sum(Media.file_size), 0)).where(
+            Media.uploaded_by_id == user_id
+        )
+    ).one()
+
+    max_storage_bytes = MAX_USER_STORAGE_MB * 1024 * 1024
+
+    if current_usage + new_file_size > max_storage_bytes:
+        current_mb = current_usage / (1024 * 1024)
+        raise HTTPException(
+            413,
+            f"Storage limit exceeded: You have used {current_mb:.1f}MB of {MAX_USER_STORAGE_MB}MB",
+        )
+
+
+def check_event_media_limits(session: Session, event_id: int) -> None:
+    """Check if event has exceeded media count limits"""
+    media_count = session.exec(
+        select(func.count(MediaUsage.id)).where(
+            MediaUsage.owner_type == ContentOwnerType.EVENT,
+            MediaUsage.owner_id == event_id,
+            MediaUsage.usage_type == MediaUsageType.GALLERY,
+        )
+    ).one()
+
+    if media_count >= MAX_EVENT_MEDIA_COUNT:
+        raise HTTPException(
+            413,
+            f"Event media limit exceeded: Maximum {MAX_EVENT_MEDIA_COUNT} media files per event",
+        )

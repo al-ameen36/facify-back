@@ -6,7 +6,6 @@ from sqlmodel import (
     Relationship,
     Column,
     String,
-    JSON,
     SQLModel,
     Index,
 )
@@ -51,6 +50,7 @@ class MediaUsage(AppBaseModel, table=True):
         default="pending", sa_column=Column(String, index=True)
     )
     approved_at: Optional[datetime] = None
+    tags: Optional[str] = Field(default=None, sa_column=Column(String))
 
     # Relationship to Media
     media_id: int = Field(
@@ -61,46 +61,6 @@ class MediaUsage(AppBaseModel, table=True):
         )
     )
     media: "Media" = Relationship(back_populates="usage")
-
-
-class MediaEmbedding(AppBaseModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    media_id: int = Field(
-        sa_column=Column(
-            Integer,
-            ForeignKey(
-                "media.id", name="fk_mediaembedding_media_id", ondelete="CASCADE"
-            ),
-            nullable=False,
-            unique=True,
-        )
-    )
-    model_name: str
-    embeddings: Optional[List[List[float]]] = Field(
-        default=None, sa_column=Column(JSON)
-    )
-    # Background processing status
-    status: Optional[str] = Field(
-        default="pending",
-        sa_column=Column(String, server_default="pending", nullable=False),
-    )  # pending, processing, completed, failed
-    retry_count: int = Field(
-        default=0, sa_column=Column(Integer, server_default="0", nullable=False)
-    )
-    processed_at: Optional[str] = None
-    error_message: Optional[str] = None
-    # For user enrollment (one-to-one)
-    user_id: Optional[int] = Field(
-        sa_column=Column(
-            Integer,
-            ForeignKey("user.id", name="fk_mediaembedding_user_id", ondelete="CASCADE"),
-            nullable=True,
-            default=None,
-        )
-    )
-    user: Optional["User"] = Relationship(back_populates="face_embedding")
-    # Normal case → event photo with multiple embeddings
-    media: "Media" = Relationship(back_populates="embeddings")
 
 
 class Media(AppBaseModel, table=True):
@@ -115,6 +75,7 @@ class Media(AppBaseModel, table=True):
     duration: Optional[float] = None
     external_id: str
     face_count: Optional[int] = Field(default=0)
+    tags: Optional[str] = Field(default=None, sa_column=Column(String))
 
     # Relationships
     uploaded_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
@@ -126,8 +87,7 @@ class Media(AppBaseModel, table=True):
             "passive_deletes": True,
         },
     )
-    # NEW: embeddings for all faces in this media
-    embeddings: List["MediaEmbedding"] = Relationship(
+    face_embeddings: List["FaceEmbedding"] = Relationship(
         back_populates="media",
         sa_relationship_kwargs={
             "cascade": "all, delete-orphan",
@@ -137,6 +97,9 @@ class Media(AppBaseModel, table=True):
 
     def to_media_read(self) -> "MediaRead":
         """Convert Media to MediaRead"""
+        # Get status from first usage if available
+        status = self.usage[0].approval_status if self.usage else None
+
         return MediaRead(
             id=self.id,
             filename=self.filename,
@@ -149,5 +112,5 @@ class Media(AppBaseModel, table=True):
             created_at=self.created_at.isoformat() if self.created_at else None,
             updated_at=self.updated_at.isoformat() if self.updated_at else None,
             face_count=self.face_count,
-            status=self.usage[0].approval_status,
+            status=status,
         )

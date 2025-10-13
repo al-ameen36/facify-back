@@ -6,11 +6,6 @@ from datetime import datetime, timezone
 DataT = TypeVar("DataT")
 
 
-def utc_now() -> datetime:
-    """Return current UTC datetime"""
-    return datetime.now(timezone.utc)
-
-
 # Pagination
 class Pagination(SQLModel):
     total: int
@@ -32,8 +27,12 @@ class SingleItemResponse(SQLModel, Generic[DataT]):
 
 class AppBaseModel(SQLModel):
     id: Optional[int] = None
-    created_at: Optional[datetime] = Field(default_factory=utc_now)
-    updated_at: Optional[datetime] = Field(default_factory=utc_now)
+    created_at: Optional[datetime] = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Optional[datetime] = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
 
 # Media
@@ -49,6 +48,7 @@ class ContentOwnerType(str, Enum):
 
 class MediaUsageType(str, Enum):
     PROFILE_PICTURE = "profile_picture"
+    PROFILE_PICTURE_ANGLE = "profile_picture_angle"
     PROFILE_PICTURE_ARCHIVED = "profile_picture_archived"
     COVER_PHOTO = "cover_photo"
     GALLERY = "gallery"

@@ -5,14 +5,12 @@ from sqlmodel import (
     Relationship,
     Column,
     String,
-    Boolean,
     func,
     select,
 )
 from typing import Optional, List
-from models.media import Media, MediaRead, MediaEmbedding
+from models.media import Media, MediaRead
 from models.events import EventParticipant
-from datetime import datetime
 
 
 # --- Pydantic Models ---
@@ -75,9 +73,7 @@ class User(SQLModel, table=True):
     hashed_password: str
 
     # One-to-one: user → face embedding (latest profile picture)
-    face_embedding: Optional[MediaEmbedding] = Relationship(
-        back_populates="user", sa_relationship_kwargs={"cascade": "delete"}
-    )
+    face_clusters: List["FaceCluster"] = Relationship(back_populates="user")
 
     # One-to-many: user → events (created by)
     events: List["Event"] = Relationship(back_populates="created_by")
@@ -100,6 +96,7 @@ class User(SQLModel, table=True):
                 MediaUsage.owner_type == ContentOwnerType.USER,
                 MediaUsage.owner_id == self.id,
                 MediaUsage.usage_type == MediaUsageType.PROFILE_PICTURE,
+                MediaUsage.tags == "center",
             )
         ).first()
         return usage.media.to_media_read() if usage and usage.media else None
@@ -110,9 +107,10 @@ class User(SQLModel, table=True):
             Event,
             EventParticipant,
             Media,
-            FaceMatch,
             MediaUsage,
             MediaUsageType,
+            FaceCluster,
+            FaceEmbedding,
         )
 
         # Count hosted events
@@ -146,11 +144,15 @@ class User(SQLModel, table=True):
             or 0
         )
 
-        # Count photos (images only)
+        # Count photos where user's face was detected (through face clusters)
         num_photos = (
             session.exec(
-                select(func.count(FaceMatch.id)).where(
-                    FaceMatch.matched_user_id == self.id,
+                select(func.count(FaceEmbedding.id.distinct()))
+                .join(FaceCluster)
+                .where(
+                    FaceCluster.user_id == self.id,
+                    FaceEmbedding.status
+                    == "completed",  # Only completed face detections
                 )
             ).one()
             or 0

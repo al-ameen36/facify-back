@@ -1,6 +1,5 @@
 import os
-import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from fastapi import (
     APIRouter,
     Depends,
@@ -15,7 +14,6 @@ from sqlmodel import Session, delete, func, select
 from db import get_session
 from models import (
     User,
-    UserRead,
     Media,
     MediaRead,
     MediaUsage,
@@ -27,13 +25,19 @@ from models import (
     Pagination,
     SingleItemResponse,
 )
-from typing import Optional, Union
+from typing import Optional
 from dotenv import load_dotenv
-from models.face import FaceMatch
 from tasks.face import embed_media
 from utils.users import get_current_user
-from utils.media import upload_file, save_file_to_db, delete_media_and_file
-from tasks.face import retroactive_match_all_events_task
+from utils.media import (
+    check_event_media_limits,
+    check_rate_limits,
+    check_storage_limits,
+    sanitize_filename,
+    upload_file,
+    save_file_to_db,
+    delete_media_and_file,
+)
 
 
 load_dotenv()
@@ -55,92 +59,9 @@ MAX_EVENT_MEDIA_COUNT = 200  # 200 media files per event
 router = APIRouter(prefix="/uploads", tags=["media"])
 
 
-def sanitize_filename(filename: str) -> str:
-    """Sanitize filename to prevent security issues"""
-    if not filename:
-        return "unnamed_file"
-
-    # Remove path separators and dangerous characters
-    filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
-    # Remove control characters
-    filename = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", filename)
-    # Limit length
-    if len(filename) > 100:
-        name, ext = os.path.splitext(filename)
-        filename = name[:95] + ext
-
-    return filename or "unnamed_file"
-
-
-def check_rate_limits(session: Session, user_id: int) -> None:
-    """Check if user has exceeded rate limits"""
-    now = datetime.now(timezone.utc)
-    hour_ago = now - timedelta(hours=1)
-    day_ago = now - timedelta(days=1)
-
-    # Check hourly limit
-    hourly_uploads = session.exec(
-        select(func.count(Media.id)).where(
-            Media.uploaded_by_id == user_id, Media.created_at >= hour_ago
-        )
-    ).one()
-
-    if hourly_uploads >= MAX_UPLOADS_PER_HOUR:
-        raise HTTPException(
-            429, f"Rate limit exceeded: Maximum {MAX_UPLOADS_PER_HOUR} uploads per hour"
-        )
-
-    # Check daily limit
-    daily_uploads = session.exec(
-        select(func.count(Media.id)).where(
-            Media.uploaded_by_id == user_id, Media.created_at >= day_ago
-        )
-    ).one()
-
-    if daily_uploads >= MAX_UPLOADS_PER_DAY:
-        raise HTTPException(
-            429, f"Rate limit exceeded: Maximum {MAX_UPLOADS_PER_DAY} uploads per day"
-        )
-
-
-def check_storage_limits(session: Session, user_id: int, new_file_size: int) -> None:
-    """Check if user has exceeded storage limits"""
-    # Get current user storage usage
-    current_usage = session.exec(
-        select(func.coalesce(func.sum(Media.file_size), 0)).where(
-            Media.uploaded_by_id == user_id
-        )
-    ).one()
-
-    max_storage_bytes = MAX_USER_STORAGE_MB * 1024 * 1024
-
-    if current_usage + new_file_size > max_storage_bytes:
-        current_mb = current_usage / (1024 * 1024)
-        raise HTTPException(
-            413,
-            f"Storage limit exceeded: You have used {current_mb:.1f}MB of {MAX_USER_STORAGE_MB}MB",
-        )
-
-
-def check_event_media_limits(session: Session, event_id: int) -> None:
-    """Check if event has exceeded media count limits"""
-    media_count = session.exec(
-        select(func.count(MediaUsage.id)).where(
-            MediaUsage.owner_type == ContentOwnerType.EVENT,
-            MediaUsage.owner_id == event_id,
-            MediaUsage.usage_type == MediaUsageType.GALLERY,
-        )
-    ).one()
-
-    if media_count >= MAX_EVENT_MEDIA_COUNT:
-        raise HTTPException(
-            413,
-            f"Event media limit exceeded: Maximum {MAX_EVENT_MEDIA_COUNT} media files per event",
-        )
-
-
 @router.post(
-    "", response_model=Union[SingleItemResponse[Media], SingleItemResponse[UserRead]]
+    "",
+    response_model=SingleItemResponse[Media],
 )
 async def upload_media(
     file: UploadFile = File(...),
@@ -151,37 +72,29 @@ async def upload_media(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Uploads a file to ImageKit for the user.
-    - Saves Media + MediaUsage.
-    - If image -> also generate and save embeddings (multiple faces supported).
+    Uploads a file (image or video) to ImageKit for a user or event.
+    - Handles cover photos and event gallery uploads.
+    - Enforces authorization and upload limits.
+    - Triggers embeddings and notifications as needed.
     """
-    # Rate Limiting: Check upload frequency limits
+    # --- Basic validations ---
     check_rate_limits(session, current_user.id)
 
-    # Content Validation: Sanitize filename
     if file.filename:
         file.filename = sanitize_filename(file.filename)
 
-    # Get file size for storage limit checks
-    file.file.seek(0, 2)  # Seek to end
+    file.file.seek(0, 2)
     file_size = file.file.tell()
-    file.file.seek(0)  # Reset to beginning
-
-    # Storage Limits: Check user storage quota
+    file.file.seek(0)
     check_storage_limits(session, current_user.id, file_size)
 
-    # --- validate owner ---
     if owner_type == "user":
-        owner = session.get(User, owner_id)
-        # Users can only upload media for themselves
-        if owner_id != current_user.id:
-            raise HTTPException(403, "You can only upload media for yourself")
+        raise HTTPException(400, "Direct user media uploads are no longer supported.")
     elif owner_type == "event":
         owner = session.get(Event, owner_id)
         if not owner:
             raise HTTPException(404, "Event not found")
 
-        # Event State Guards: Prevent uploads to ended events
         now = datetime.now(timezone.utc)
         if owner.end_time:
             end_time_aware = (
@@ -190,26 +103,19 @@ async def upload_media(
                 else owner.end_time
             )
             if end_time_aware < now:
-                raise HTTPException(
-                    403, "Cannot upload media to an event that has already ended"
-                )
+                raise HTTPException(403, "Cannot upload media to a past event")
 
-        # For events, check authorization based on usage type
+        # Handle different usage types
         if usage_type == MediaUsageType.COVER_PHOTO:
-            # Only event creator can upload cover photos
             if owner.created_by_id != current_user.id:
-                raise HTTPException(403, "Only event creators can upload cover photos")
+                raise HTTPException(403, "Only the event creator can set a cover photo")
         elif usage_type == MediaUsageType.GALLERY:
-            # Check if event allows contributions
             if not owner.allow_contributions:
-                raise HTTPException(
-                    403, "This event does not allow media contributions"
-                )
+                raise HTTPException(403, "This event does not allow contributions")
 
-            # Storage Limits: Check event media count limits
             check_event_media_limits(session, owner_id)
 
-            # Event creator or approved participants can upload to gallery
+            # Ensure participant status
             if owner.created_by_id != current_user.id:
                 participant_check = session.exec(
                     select(EventParticipant).where(
@@ -220,59 +126,45 @@ async def upload_media(
 
                 if not participant_check:
                     raise HTTPException(403, "You are not a participant of this event")
-                elif participant_check.status == "pending":
-                    raise HTTPException(
-                        403, "Your participation request is still pending approval"
-                    )
-                elif participant_check.status == "rejected":
-                    raise HTTPException(403, "Your participation request was rejected")
                 elif participant_check.status != "approved":
-                    raise HTTPException(403, "Access denied")
+                    raise HTTPException(403, "Your participation is not approved")
+        else:
+            raise HTTPException(400, f"Invalid usage_type for event: {usage_type}")
     else:
         raise HTTPException(400, "Invalid owner_type")
 
-    if not owner:
-        raise HTTPException(404, f"{owner_type.capitalize()} not found")
-
-    supported_usage_types = [item.value for item in MediaUsageType]
-    if usage_type not in supported_usage_types:
-        raise HTTPException(400, f"Unsupported usage_type: {usage_type}")
-
-    # MIME Type Validation: Enforce allowed file types
+    # --- Validate file type ---
     if file.content_type:
         if file.content_type.startswith("image/"):
             if file.content_type not in ALLOWED_IMAGE_TYPES:
                 raise HTTPException(
                     400,
-                    f"Unsupported image type: {file.content_type}. Allowed types: {', '.join(ALLOWED_IMAGE_TYPES)}",
+                    f"Unsupported image type: {file.content_type}. Allowed: {', '.join(ALLOWED_IMAGE_TYPES)}",
                 )
         elif file.content_type.startswith("video/"):
             if file.content_type not in ALLOWED_VIDEO_TYPES:
                 raise HTTPException(
                     400,
-                    f"Unsupported video type: {file.content_type}. Allowed types: {', '.join(ALLOWED_VIDEO_TYPES)}",
+                    f"Unsupported video type: {file.content_type}. Allowed: {', '.join(ALLOWED_VIDEO_TYPES)}",
                 )
         else:
-            raise HTTPException(
-                400,
-                f"Unsupported file type: {file.content_type}. Only images and videos are allowed.",
-            )
+            raise HTTPException(400, "Only images and videos are supported.")
     else:
-        raise HTTPException(400, "File content type could not be determined")
+        raise HTTPException(400, "Could not determine file type")
 
     try:
+        # --- Upload logic ---
         approval_status = "approved"
+        if (
+            owner_type == "event"
+            and usage_type == MediaUsageType.GALLERY
+            and owner.created_by_id != current_user.id
+            and not owner.auto_approve_uploads
+        ):
+            approval_status = "pending"
 
-        if owner_type == "event" and usage_type == MediaUsageType.GALLERY:
-            event = session.get(Event, owner_id)
-            # Auto-approve if uploaded by event creator, otherwise pending
-            if event.created_by_id == current_user.id or event.auto_approve_uploads:
-                approval_status = "approved"
-            else:
-                approval_status = "pending"
-
-        # if cover_photo or profile_picture: delete existing one
-        if usage_type in [MediaUsageType.COVER_PHOTO, MediaUsageType.PROFILE_PICTURE]:
+        # Replace old cover if needed
+        if usage_type == MediaUsageType.COVER_PHOTO:
             old_usage = session.exec(
                 select(MediaUsage).where(
                     MediaUsage.owner_id == owner_id,
@@ -280,13 +172,12 @@ async def upload_media(
                     MediaUsage.usage_type == usage_type,
                 )
             ).first()
-
-            if old_usage and usage_type == MediaUsageType.PROFILE_PICTURE:
-                old_usage.usage_type = MediaUsageType.PROFILE_PICTURE_ARCHIVED
+            if old_usage:
+                old_usage.usage_type = MediaUsageType.COVER_PHOTO_ARCHIVED
                 session.add(old_usage)
                 session.commit()
 
-        # Upload file first
+        # Upload to storage (e.g., ImageKit)
         uploaded_media = upload_file(
             file=file,
             user=current_user,
@@ -295,74 +186,50 @@ async def upload_media(
             usage_type=usage_type,
         )
 
-        # Save to database without embeddings
+        # Save DB record
         saved_media = save_file_to_db(
             session=session,
             media=uploaded_media,
             owner_id=owner_id,
             owner_type=owner_type,
             usage_type=usage_type,
-            embeddings=None,  # Will be generated in background
+            embeddings=None,
             user_id=current_user.id,
             approval_status=approval_status,
         )
 
-        # Notify event creator when participant uploads
+        # Notify event creator
         if owner_type == "event" and usage_type == MediaUsageType.GALLERY:
-            event = session.get(Event, owner_id)
+            if current_user.id != owner.created_by_id:
+                event = owner
+                event_message = (
+                    f"{current_user.full_name} uploaded media pending your approval."
+                    if approval_status == "pending"
+                    else f"{current_user.full_name} uploaded new media."
+                )
+                send_notification.delay(
+                    user_id=event.created_by_id,
+                    event="media_uploaded",
+                    data={
+                        "event_id": event.id,
+                        "event_name": event.name,
+                        "uploader_name": current_user.full_name,
+                        "message": event_message,
+                    },
+                )
 
-            # Skip notifying self
-            if current_user.id != event.created_by_id:
-                if approval_status == "pending":
-                    # Notify creator about pending media
-                    send_notification.delay(
-                        user_id=event.created_by_id,
-                        event="media_pending_approval",
-                        data={
-                            "event_id": event.id,
-                            "event_name": event.name,
-                            "uploader_name": current_user.full_name,
-                            "message": f"{current_user.full_name} uploaded media pending your approval in '{event.name}'.",
-                        },
-                    )
-                elif approval_status == "approved":
-                    # Auto-approved upload
-                    send_notification.delay(
-                        user_id=event.created_by_id,
-                        event="new_media_uploaded",
-                        data={
-                            "event_id": event.id,
-                            "event_name": event.name,
-                            "uploader_name": current_user.full_name,
-                            "message": f"{current_user.full_name} uploaded new media to '{event.name}'.",
-                        },
-                    )
-
-        # Queue embedding generation in background (skip for cover photos)
+        # Generate embeddings in background (skip for cover photos)
         if usage_type != MediaUsageType.COVER_PHOTO:
             embed_media.delay(saved_media.id, uploaded_media.external_url)
 
-        # If uploading profile picture, return updated user data
-        if usage_type == MediaUsageType.PROFILE_PICTURE and owner_type == "user":
-            session.refresh(current_user)  # Refresh to get latest data
-            user_data = current_user.to_user_read(session)
-
-            # Trigger retroactive matching for all events user is in
-            retroactive_match_all_events_task.delay(current_user.id)
-
-            return SingleItemResponse(
-                data=user_data, message="Profile picture updated successfully"
-            )
-
-        # Return appropriate message based on approval status
-        message = "Successfully uploaded media"
-        if owner_type == "event" and usage_type == MediaUsageType.GALLERY:
-            if approval_status == "pending":
-                message = "Media uploaded successfully. Pending event creator approval."
-            else:
-                message = "Media uploaded and approved successfully"
-
-        return SingleItemResponse(data=saved_media, message=message)
+        return SingleItemResponse(
+            data=saved_media,
+            message=(
+                "Media uploaded successfully."
+                if approval_status == "approved"
+                else "Media uploaded successfully. Pending approval."
+            ),
+        )
 
     except HTTPException:
         session.rollback()
@@ -601,10 +468,6 @@ async def delete_media(
         )
 
     try:
-        # Delete dependent facematch entries
-        session.exec(delete(FaceMatch).where(FaceMatch.media_id == media.id))
-        session.commit()
-
         # Delete media and associated files
         delete_media_and_file(session, media)
         session.commit()

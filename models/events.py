@@ -9,7 +9,9 @@ from sqlmodel import (
     String,
     ForeignKey,
     Integer,
+    and_,
 )
+from sqlalchemy.orm import foreign, remote, foreign
 from models.core import AppBaseModel, ContentOwnerType, MediaUsageType
 from models.media import MediaUsage, MediaRead
 import random
@@ -101,6 +103,12 @@ class Event(AppBaseModel, table=True):
     participants: List["User"] = Relationship(
         back_populates="joined_events",
         link_model=EventParticipant,
+    )
+    media_usage: List["MediaUsage"] = Relationship(
+        sa_relationship_kwargs={
+            "primaryjoin": "and_(foreign(MediaUsage.owner_id) == Event.id, MediaUsage.owner_type == 'EVENT')",
+            "viewonly": True,
+        }
     )
 
     def get_cover_photo_media(self, session) -> Optional[MediaRead]:

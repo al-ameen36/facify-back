@@ -23,7 +23,6 @@ from utils.events import (
 )
 from utils.users import get_current_user
 from db import get_session
-from tasks.face import retroactive_match_task
 from tasks.notifications import send_notification
 
 
@@ -573,10 +572,6 @@ async def update_participant_status(
     session.add(participant)
     session.commit()
     session.refresh(participant)
-
-    # Trigger background face-matching if approved
-    if status == "approved":
-        retroactive_match_task.delay(user_id, event_id)
 
     # --- Notify the participant ---
     send_notification.delay(

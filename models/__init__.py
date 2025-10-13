@@ -22,11 +22,10 @@ from .media import (
     Media,
     MediaUsage,
     MediaUsageType,
-    MediaEmbedding,
     MediaRead,
 )
 
-from .face import FaceMatch, UnknownFaceCluster
+from .face import FaceCluster, FaceEmbedding
 
 
 # Rebuild models to resolve forward references
@@ -53,11 +52,10 @@ ParticipantRead.model_rebuild()
 
 Media.model_rebuild()
 MediaUsage.model_rebuild()
-MediaEmbedding.model_rebuild()
 MediaRead.model_rebuild()
 
-FaceMatch.model_rebuild()
-UnknownFaceCluster.model_rebuild()
+FaceEmbedding.model_rebuild()
+FaceCluster.model_rebuild()
 
 
 # Export models
@@ -85,11 +83,10 @@ __all__ = [
     # Media
     "Media",
     "MediaRead",
-    "MediaEmbedding",
     "MediaUsage",
     "MediaUsageType",
     "ContentOwnerType",
     # Face
-    "FaceMatch",
-    "UnknownFaceCluster",
+    "FaceEmbedding",
+    "FaceCluster",
 ]
