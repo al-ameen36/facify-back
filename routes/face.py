@@ -375,3 +375,170 @@ async def get_cluster_faces(
             total_pages=total_pages,
         ),
     )
+
+
+@router.get("/user/{user_id}", response_model=PaginatedResponse[ClusterGalleryItem])
+async def get_user_clusters(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    session=Depends(get_session),
+    skip_auth: bool = Query(False, description="Skip authorization (for debugging)"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1),
+):
+    """
+    Return paginated clusters that are linked to `user_id` (clusters are event-scoped).
+    Each cluster includes media items (face thumbnails generated from facial_area).
+    """
+
+    # Authorization: only allow requesting other user's clusters if skip_auth
+    if (
+        not skip_auth
+        and current_user.id != user_id
+        and not getattr(current_user, "is_admin", False)
+    ):
+        raise HTTPException(
+            status_code=403, detail="Not authorized to view this user's clusters"
+        )
+
+    # --- Step 1: Find clusters that belong to the user_id ---
+    clusters_stmt = (
+        select(FaceCluster)
+        .where(FaceCluster.user_id == user_id)
+        .options(selectinload(FaceCluster.user))
+    )
+    clusters_all = session.exec(clusters_stmt).all()
+    if not clusters_all:
+        return PaginatedResponse[ClusterGalleryItem](
+            message="No clusters found for this user",
+            data=[],
+            pagination=Pagination(total=0, page=page, per_page=per_page, total_pages=0),
+        )
+
+    # --- Step 2: Pagination at cluster level ---
+    total = len(clusters_all)
+    offset = (page - 1) * per_page
+    paginated_clusters = clusters_all[offset : offset + per_page]
+    total_pages = ((total - 1) // per_page) + 1 if total else 0
+
+    # --- Step 3: For these clusters, fetch embeddings and media ---
+    cluster_ids = [c.id for c in paginated_clusters]
+
+    embeddings_stmt = (
+        select(FaceEmbedding)
+        .where(FaceEmbedding.cluster_id.in_(cluster_ids))
+        .options(selectinload(FaceEmbedding.media))
+    )
+    embeddings = session.exec(embeddings_stmt).all()
+
+    # Build a map cluster_id -> list of embeddings
+    embeddings_by_cluster = {}
+    for fe in embeddings:
+        embeddings_by_cluster.setdefault(fe.cluster_id, []).append(fe)
+
+    # ImageKit cropping params
+    IMAGEKIT_TRANSFORM_BASE = "w-400,h-400,c-force,q-80"
+    PADDING_RATIO = 0.25
+
+    # --- Step 4: Build gallery items ---
+    gallery_items: List[ClusterGalleryItem] = []
+    for cluster in paginated_clusters:
+        embs = embeddings_by_cluster.get(cluster.id, [])
+        media_items: List[ClusterMediaItem] = []
+
+        for fe in embs:
+            if not fe.media:
+                continue
+            try:
+                media_read = fe.media.to_media_read()
+            except Exception:
+                # fallback if to_media_read fails
+                continue
+
+            face_area = fe.facial_area or {}
+            thumb_url = media_read.url
+
+            # If we have bounding box, apply padding and use cm-extract
+            if {"x", "y", "w", "h"} <= set(face_area.keys()):
+                x = int(face_area["x"])
+                y = int(face_area["y"])
+                w = int(face_area["w"])
+                h = int(face_area["h"])
+
+                pad_w = int(w * PADDING_RATIO)
+                pad_h = int(h * PADDING_RATIO)
+                new_x = max(x - pad_w, 0)
+                new_y = max(y - pad_h, 0)
+                new_w = w + 2 * pad_w
+                new_h = h + 2 * pad_h
+
+                thumb_url = (
+                    f"{media_read.url}"
+                    f"?tr=x-{new_x},y-{new_y},w-{new_w},h-{new_h},cm-extract,{IMAGEKIT_TRANSFORM_BASE}"
+                )
+
+            media_items.append(
+                ClusterMediaItem(
+                    id=media_read.id,
+                    url=media_read.url,
+                    thumbnail=thumb_url,
+                    filename=media_read.filename,
+                    mime_type=media_read.mime_type,
+                    file_size=media_read.file_size,
+                    duration=media_read.duration,
+                    uploaded_at=(
+                        media_read.created_at.isoformat()
+                        if hasattr(media_read.created_at, "isoformat")
+                        else media_read.created_at
+                    ),
+                    face_area=face_area,
+                    status=media_read.status,
+                )
+            )
+
+        # pick best thumbnail (largest face area) as a string URL
+        thumbnail_url: Optional[str] = None
+        if media_items:
+            largest = max(
+                media_items,
+                key=lambda m: (
+                    (m.face_area.get("w", 0) * m.face_area.get("h", 0))
+                    if m.face_area
+                    else 0
+                ),
+            )
+            thumbnail_url = largest.thumbnail
+
+        # cluster user info (should be the same user_id for all these clusters)
+        user_info = None
+        if cluster.user:
+            profile_pic = cluster.user.get_profile_picture_media(session)
+            user_info = ClusterUserInfo(
+                id=cluster.user.id,
+                full_name=cluster.user.full_name,
+                username=cluster.user.username,
+                profile_picture=profile_pic.url if profile_pic else None,
+            )
+
+        gallery_items.append(
+            ClusterGalleryItem(
+                cluster_id=cluster.id,
+                label=cluster.label or f"Person {cluster.id}",
+                user=user_info,
+                face_count=len(embs),
+                thumbnail=thumbnail_url,
+                media=media_items,
+            )
+        )
+
+    # Optionally sort clusters by face_count (most faces first)
+    gallery_items.sort(key=lambda x: x.face_count, reverse=True)
+
+    # --- Step 5: Return using standard paginated response ---
+    return PaginatedResponse[ClusterGalleryItem](
+        message=f"Clusters retrieved successfully for user {user_id}",
+        data=gallery_items,
+        pagination=Pagination(
+            total=total, page=page, per_page=per_page, total_pages=total_pages
+        ),
+    )

@@ -38,6 +38,14 @@ class FaceCluster(SQLModel, table=True):
 
     faces: List["FaceEmbedding"] = Relationship(back_populates="cluster")
     user: Optional["User"] = Relationship(back_populates="face_clusters")
+    event_id: Optional[int] = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("event.id", name="fk_facecluster_event_id", ondelete="CASCADE"),
+            nullable=True,
+        )
+    )
+    event: Optional["Event"] = Relationship(back_populates="face_clusters")
 
 
 class FaceEmbedding(SQLModel, table=True):

@@ -110,6 +110,7 @@ class Event(AppBaseModel, table=True):
             "viewonly": True,
         }
     )
+    face_clusters: List["FaceCluster"] = Relationship(back_populates="event")
 
     def get_cover_photo_media(self, session) -> Optional[MediaRead]:
         """

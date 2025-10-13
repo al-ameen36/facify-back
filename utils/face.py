@@ -177,10 +177,20 @@ def cluster_embeddings_for_media(
     session: Session, media_id: int, threshold: float = CLUSTER_SIMILARITY_THRESHOLD
 ):
     """
-    For each FaceEmbedding of this media that has no cluster,
-    either assign it to a nearest FaceCluster (if similarity >= threshold)
-    or create a new FaceCluster for it.
+    Assign unclustered FaceEmbedding rows for `media_id` to event-scoped clusters.
     """
+
+    # 1) Resolve event for this media
+    usage = session.exec(
+        select(MediaUsage).where(MediaUsage.media_id == media_id)
+    ).first()
+    event_id = (
+        usage.owner_id
+        if usage is not None and usage.owner_type == ContentOwnerType.EVENT
+        else None
+    )
+
+    # 2) Load unclustered embeddings for this media only
     face_embeddings = session.exec(
         select(FaceEmbedding).where(
             FaceEmbedding.media_id == media_id, FaceEmbedding.cluster_id == None
@@ -190,40 +200,52 @@ def cluster_embeddings_for_media(
     if not face_embeddings:
         return
 
-    # load all existing cluster centroids (global)
-    clusters = session.exec(select(FaceCluster)).all()
+    # 3) Load existing clusters for this event only
+    clusters = (
+        session.exec(select(FaceCluster).where(FaceCluster.event_id == event_id)).all()
+        if event_id is not None
+        else []
+    )
+
     cluster_centroids = (
         [np.array(c.centroid, dtype=float) for c in clusters] if clusters else []
     )
 
+    # keep track of cluster ids that need centroid recomputation
     updated_cluster_ids = set()
 
     for fe in face_embeddings:
-        # Validate embedding before processing
+        # validate embedding before doing any math
         if not validate_embedding(fe.embedding):
             print(f"[cluster] Invalid embedding for FaceEmbedding {fe.id}, skipping")
             continue
 
         vec = np.array(fe.embedding, dtype=float)
 
-        # if no clusters exist -> create new
+        # If no clusters exist for this event -> create one
         if not cluster_centroids:
             new_c = create_cluster_safely(session, vec)
             if new_c:
-                fe.cluster_id = new_c.id
-                session.add(fe)
+                # associate it with the event
+                new_c.event_id = event_id
+                session.add(new_c)
                 session.commit()
+                session.refresh(new_c)
+
+                # assign embedding
+                fe.cluster_id = new_c.id
+                fe.status = "completed"
+                session.add(fe)
+
+                # update local lists
+                clusters.append(new_c)
+                cluster_centroids.append(np.array(new_c.centroid, dtype=float))
                 updated_cluster_ids.add(new_c.id)
-                # refresh cluster lists
-                clusters = session.exec(select(FaceCluster)).all()
-                cluster_centroids = [
-                    np.array(c.centroid, dtype=float) for c in clusters
-                ]
             continue
 
         # compute cosine similarity to each cluster centroid
         try:
-            sims = cosine_similarity([vec], cluster_centroids)[0]
+            sims = cosine_similarity([vec], cluster_centroids)[0]  # shape (n_clusters,)
             best_idx = int(np.argmax(sims))
             best_score = float(sims[best_idx])
         except Exception as e:
@@ -233,30 +255,39 @@ def cluster_embeddings_for_media(
             continue
 
         if best_score >= threshold:
+            # assign to the best cluster
             cluster = clusters[best_idx]
             fe.cluster_id = cluster.id
+            fe.status = "completed"
             session.add(fe)
-            session.commit()
             updated_cluster_ids.add(cluster.id)
-            update_cluster_centroid(session, cluster)
         else:
-            # create new cluster
+            # create a new event-scoped cluster
             new_c = create_cluster_safely(session, vec)
             if new_c:
-                fe.cluster_id = new_c.id
-                session.add(fe)
+                new_c.event_id = event_id
+                session.add(new_c)
                 session.commit()
-                updated_cluster_ids.add(new_c.id)
-                # refresh cluster lists for subsequent iterations
-                clusters = session.exec(select(FaceCluster)).all()
-                cluster_centroids = [
-                    np.array(c.centroid, dtype=float) for c in clusters
-                ]
+                session.refresh(new_c)
 
-    # ensure centroids refreshed for all updated clusters
+                # assign embedding to new cluster
+                fe.cluster_id = new_c.id
+                fe.status = "completed"
+                session.add(fe)
+
+                # update local lists for future comparisons in this loop
+                clusters.append(new_c)
+                cluster_centroids.append(np.array(new_c.centroid, dtype=float))
+                updated_cluster_ids.add(new_c.id)
+
+    # 4) commit all embedding assignments at once
+    session.commit()
+
+    # 5) recompute centroids for any clusters we touched
     for cid in updated_cluster_ids:
         cluster = session.get(FaceCluster, cid)
-        update_cluster_centroid(session, cluster)
+        if cluster:
+            update_cluster_centroid(session, cluster)
 
 
 def update_cluster_centroid(session: Session, cluster: FaceCluster):
