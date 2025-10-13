@@ -178,6 +178,7 @@ def cluster_embeddings_for_media(
 ):
     """
     Assign unclustered FaceEmbedding rows for `media_id` to event-scoped clusters.
+    Uses batch processing and cluster merging for better accuracy.
     """
 
     # 1) Resolve event for this media
@@ -211,11 +212,12 @@ def cluster_embeddings_for_media(
         [np.array(c.centroid, dtype=float) for c in clusters] if clusters else []
     )
 
-    # keep track of cluster ids that need centroid recomputation
+    # Keep track of cluster ids that need centroid recomputation
     updated_cluster_ids = set()
+    newly_created_clusters = []  # Track clusters created in this batch
 
     for fe in face_embeddings:
-        # validate embedding before doing any math
+        # Validate embedding before doing any math
         if not validate_embedding(fe.embedding):
             print(f"[cluster] Invalid embedding for FaceEmbedding {fe.id}, skipping")
             continue
@@ -226,24 +228,25 @@ def cluster_embeddings_for_media(
         if not cluster_centroids:
             new_c = create_cluster_safely(session, vec)
             if new_c:
-                # associate it with the event
+                # Associate it with the event
                 new_c.event_id = event_id
                 session.add(new_c)
                 session.commit()
                 session.refresh(new_c)
 
-                # assign embedding
+                # Assign embedding
                 fe.cluster_id = new_c.id
                 fe.status = "completed"
                 session.add(fe)
 
-                # update local lists
+                # Update local lists
                 clusters.append(new_c)
                 cluster_centroids.append(np.array(new_c.centroid, dtype=float))
+                newly_created_clusters.append(new_c)
                 updated_cluster_ids.add(new_c.id)
             continue
 
-        # compute cosine similarity to each cluster centroid
+        # Compute cosine similarity to each cluster centroid
         try:
             sims = cosine_similarity([vec], cluster_centroids)[0]  # shape (n_clusters,)
             best_idx = int(np.argmax(sims))
@@ -254,15 +257,18 @@ def cluster_embeddings_for_media(
             )
             continue
 
-        if best_score >= threshold:
-            # assign to the best cluster
+        # Use a slightly lower threshold for assignment (0.65 instead of 0.68)
+        assignment_threshold = threshold - 0.03
+
+        if best_score >= assignment_threshold:
+            # Assign to the best cluster
             cluster = clusters[best_idx]
             fe.cluster_id = cluster.id
             fe.status = "completed"
             session.add(fe)
             updated_cluster_ids.add(cluster.id)
         else:
-            # create a new event-scoped cluster
+            # Create a new event-scoped cluster
             new_c = create_cluster_safely(session, vec)
             if new_c:
                 new_c.event_id = event_id
@@ -270,35 +276,137 @@ def cluster_embeddings_for_media(
                 session.commit()
                 session.refresh(new_c)
 
-                # assign embedding to new cluster
+                # Assign embedding to new cluster
                 fe.cluster_id = new_c.id
                 fe.status = "completed"
                 session.add(fe)
 
-                # update local lists for future comparisons in this loop
+                # Update local lists for future comparisons in this loop
                 clusters.append(new_c)
                 cluster_centroids.append(np.array(new_c.centroid, dtype=float))
+                newly_created_clusters.append(new_c)
                 updated_cluster_ids.add(new_c.id)
 
-    # 4) commit all embedding assignments at once
+    # 4) Commit all embedding assignments at once
     session.commit()
 
-    # 5) recompute centroids for any clusters we touched
+    # 5) Recompute centroids for any clusters we touched
     for cid in updated_cluster_ids:
         cluster = session.get(FaceCluster, cid)
         if cluster:
             update_cluster_centroid(session, cluster)
 
+    # 6) IMPORTANT: Merge similar clusters that may have been created
+    if event_id:
+        merge_similar_clusters(session, event_id, merge_threshold=0.72)
+
+
+def merge_similar_clusters(
+    session: Session, event_id: int, merge_threshold: float = 0.72
+):
+    """
+    Find and merge clusters that are very similar to each other.
+    This helps fix over-segmentation from sequential clustering.
+    """
+    # Get all clusters for this event
+    clusters = session.exec(
+        select(FaceCluster).where(FaceCluster.event_id == event_id)
+    ).all()
+
+    if len(clusters) < 2:
+        return
+
+    # Build centroid matrix
+    valid_clusters = []
+    centroids = []
+    for c in clusters:
+        if validate_embedding(c.centroid):
+            valid_clusters.append(c)
+            centroids.append(np.array(c.centroid, dtype=float))
+
+    if len(centroids) < 2:
+        return
+
+    centroid_matrix = np.array(centroids)
+
+    # Compute pairwise similarities
+    similarity_matrix = cosine_similarity(centroid_matrix)
+
+    # Find pairs to merge (excluding self-similarity)
+    merged = set()
+    for i in range(len(valid_clusters)):
+        if i in merged:
+            continue
+
+        cluster_i = valid_clusters[i]
+
+        for j in range(i + 1, len(valid_clusters)):
+            if j in merged:
+                continue
+
+            similarity = similarity_matrix[i][j]
+
+            if similarity >= merge_threshold:
+                cluster_j = valid_clusters[j]
+
+                # Merge cluster_j into cluster_i
+                print(
+                    f"[merge] Merging cluster {cluster_j.id} into {cluster_i.id} (similarity: {similarity:.3f})"
+                )
+
+                # Reassign all embeddings from cluster_j to cluster_i
+                embeddings_to_move = session.exec(
+                    select(FaceEmbedding).where(
+                        FaceEmbedding.cluster_id == cluster_j.id
+                    )
+                ).all()
+
+                for emb in embeddings_to_move:
+                    emb.cluster_id = cluster_i.id
+                    session.add(emb)
+
+                # If cluster_j had a user assigned, preserve it if cluster_i doesn't
+                if cluster_j.user_id and not cluster_i.user_id:
+                    cluster_i.user_id = cluster_j.user_id
+
+                # Delete the merged cluster
+                session.delete(cluster_j)
+                merged.add(j)
+
+        # Recompute centroid for cluster_i after merges
+        if i not in merged:
+            session.commit()
+            update_cluster_centroid(session, cluster_i)
+
+    session.commit()
+    print(f"[merge] Merged {len(merged)} clusters in event {event_id}")
+
 
 def update_cluster_centroid(session: Session, cluster: FaceCluster):
     """
-    Recalculate centroid as mean of all embeddings currently assigned to this cluster.
+    Recalculate centroid as mean of all embeddings currently assigned to this cluster,
+    EXCLUDING profile picture embeddings.
     """
     if cluster is None:
         return
 
+    # Only include embeddings from event photos, not profile pictures
     face_rows = session.exec(
-        select(FaceEmbedding).where(FaceEmbedding.cluster_id == cluster.id)
+        select(FaceEmbedding)
+        .join(Media, Media.id == FaceEmbedding.media_id)
+        .join(MediaUsage, MediaUsage.media_id == Media.id)
+        .where(
+            FaceEmbedding.cluster_id == cluster.id,
+            MediaUsage.owner_type == ContentOwnerType.EVENT,
+            # Exclude profile picture usage types
+            ~MediaUsage.usage_type.in_(
+                [
+                    MediaUsageType.PROFILE_PICTURE,
+                    MediaUsageType.PROFILE_PICTURE_ANGLE,
+                    MediaUsageType.PROFILE_PICTURE_ARCHIVED,
+                ]
+            ),
+        )
     ).all()
 
     if not face_rows:
@@ -445,11 +553,12 @@ def match_clusters_to_users(
 
 
 def cluster_unclustered_faces_in_event(
-    session: Session, event_id: int, eps: float = 0.5, min_samples: int = 2
+    session: Session, event_id: int, eps: float = 0.32, min_samples: int = 2
 ):
     """
     For any FaceEmbedding in an event with cluster_id == NULL, run DBSCAN to group them
     and create new FaceCluster rows for each found group.
+    ONLY clusters event photos, excludes profile pictures.
     """
     rows = session.exec(
         select(FaceEmbedding, Media)
@@ -458,10 +567,18 @@ def cluster_unclustered_faces_in_event(
         .where(
             MediaUsage.owner_type == ContentOwnerType.EVENT,
             MediaUsage.owner_id == event_id,
+            # Explicitly exclude profile picture usage types
+            ~MediaUsage.usage_type.in_(
+                [
+                    MediaUsageType.PROFILE_PICTURE,
+                    MediaUsageType.PROFILE_PICTURE_ANGLE,
+                    MediaUsageType.PROFILE_PICTURE_ARCHIVED,
+                ]
+            ),
         )
     ).all()
 
-    # filter only unclustered embeddings with valid data
+    # Filter only unclustered embeddings with valid data
     unclustered = []
     mapping = []
     for fe, media in rows:
@@ -473,10 +590,13 @@ def cluster_unclustered_faces_in_event(
         return
 
     X = np.array(unclustered)
+
+    # DBSCAN with cosine distance (eps is distance, so lower = more similar)
+    # eps=0.32 corresponds roughly to cosine similarity of 0.68
     db = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine").fit(X)
     labels = db.labels_
 
-    # group by label
+    # Group by label
     groups = {}
     for i, label in enumerate(labels):
         if label == -1:
@@ -484,7 +604,7 @@ def cluster_unclustered_faces_in_event(
         groups.setdefault(label, []).append(mapping[i])
 
     for label, group in groups.items():
-        # create FaceCluster using mean of group
+        # Create FaceCluster using mean of group
         valid_embeddings = [
             np.array(g.embedding, dtype=float)
             for g in group
@@ -506,25 +626,33 @@ def cluster_unclustered_faces_in_event(
 
         cluster = FaceCluster(
             centroid=centroid.tolist(),
+            event_id=event_id,  # Associate with event
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
         session.add(cluster)
         session.commit()
+        session.refresh(cluster)
 
-        # assign face embeddings in group to this cluster
+        # Assign face embeddings in group to this cluster
         for fe in group:
             fe.cluster_id = cluster.id
+            fe.status = "completed"
             session.add(fe)
         session.commit()
 
-        # notify event owner about a new unknown cluster
-        send_notification.delay(
-            user_id=event_id,
-            event="unknown_cluster_created",
-            data={
-                "event_id": event_id,
-                "cluster_id": cluster.id,
-                "count": len(group),
-            },
-        )
+        # Notify event owner about a new unknown cluster
+        event = session.get(Event, event_id)
+        if event and event.created_by_id:
+            send_notification.delay(
+                user_id=event.created_by_id,
+                event="unknown_cluster_created",
+                data={
+                    "event_id": event_id,
+                    "cluster_id": cluster.id,
+                    "count": len(group),
+                },
+            )
+
+    # After DBSCAN clustering, merge any similar clusters
+    merge_similar_clusters(session, event_id, merge_threshold=0.72)
