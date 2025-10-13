@@ -141,7 +141,9 @@ def generate_embeddings_background(session: Session, media_id: int, image_url: s
                 facial_area=facial_area,
                 cluster_id=None,
                 created_at=datetime.now(timezone.utc),
+                tags=media.tags,
             )
+
             session.add(fe)
             created += 1
 
@@ -302,8 +304,7 @@ def match_clusters_to_users(
     session: Session, media_id: int, user_threshold: float = USER_MATCH_SIMILARITY
 ):
     """
-    For clusters that contain embeddings from this media, try to match the cluster centroid
-    to users who have profile picture embeddings. If match found, set cluster.user_id and notify.
+    Match newly formed clusters to users using all their face angle embeddings.
     """
     usage = session.exec(
         select(MediaUsage).where(MediaUsage.media_id == media_id)
@@ -312,17 +313,17 @@ def match_clusters_to_users(
     if usage and usage.owner_type == ContentOwnerType.EVENT:
         event = session.get(Event, usage.owner_id)
 
-    # get clusters touched by this media
+    # Get clusters touched by this media
     touched_cluster_ids = session.exec(
         select(FaceEmbedding.cluster_id).where(
             FaceEmbedding.media_id == media_id, FaceEmbedding.cluster_id != None
         )
     ).all()
-    touched_cluster_ids = list({cid for cid in touched_cluster_ids if cid is not None})
+    touched_cluster_ids = list({cid for cid in touched_cluster_ids if cid})
     if not touched_cluster_ids:
         return
 
-    # gather user profile embeddings
+    # Gather ALL user face embeddings (all angles)
     user_profile_rows = session.exec(
         select(User, FaceEmbedding)
         .join(MediaUsage, MediaUsage.owner_id == User.id)
@@ -333,19 +334,22 @@ def match_clusters_to_users(
             MediaUsage.usage_type.in_(
                 [
                     MediaUsageType.PROFILE_PICTURE,
+                    MediaUsageType.PROFILE_PICTURE_ANGLE,
                     MediaUsageType.PROFILE_PICTURE_ARCHIVED,
                 ]
             ),
         )
     ).all()
 
-    # build map user_id -> embedding vector
+    # Build user_id -> list of embeddings
     user_embeddings = {}
     for user, face_emb in user_profile_rows:
         if face_emb and face_emb.embedding and validate_embedding(face_emb.embedding):
-            user_embeddings[user.id] = np.array(face_emb.embedding, dtype=float)
+            user_embeddings.setdefault(user.id, []).append(
+                np.array(face_emb.embedding, dtype=float)
+            )
 
-    # for each touched cluster, compute similarity to profile embeddings
+    # Match each cluster to the best user
     for cid in touched_cluster_ids:
         cluster = session.get(FaceCluster, cid)
         if not cluster or not validate_embedding(cluster.centroid):
@@ -355,11 +359,21 @@ def match_clusters_to_users(
 
         best_user = None
         best_sim = -1.0
-        for uid, uvec in user_embeddings.items():
+
+        for uid, emb_list in user_embeddings.items():
             try:
-                sim = float(cosine_similarity([centroid], [uvec])[0][0])
-                if sim > best_sim:
-                    best_sim = sim
+                sims = [
+                    float(cosine_similarity([centroid], [uvec])[0][0])
+                    for uvec in emb_list
+                ]
+
+                sims = [
+                    float(cosine_similarity([centroid], [uvec])[0][0])
+                    for uvec in emb_list
+                ]
+                avg_sim = np.mean(sims)
+                if avg_sim > best_sim:
+                    best_sim = avg_sim
                     best_user = uid
             except Exception as e:
                 print(
@@ -367,7 +381,6 @@ def match_clusters_to_users(
                 )
                 continue
 
-        # assign if above threshold and cluster not already linked to same user
         if best_user and best_sim >= user_threshold:
             if cluster.user_id != best_user:
                 cluster.user_id = best_user

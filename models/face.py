@@ -67,6 +67,7 @@ class FaceEmbedding(SQLModel, table=True):
         ),
     )  # pending, processing, completed, failed
     facial_area: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+
     cluster_id: Optional[int] = Field(
         sa_column=Column(
             Integer,
@@ -78,6 +79,7 @@ class FaceEmbedding(SQLModel, table=True):
             nullable=True,
         )
     )
+    tags: Optional[str] = Field(default=None, sa_column=Column(String))
     created_at: Optional[datetime] = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )

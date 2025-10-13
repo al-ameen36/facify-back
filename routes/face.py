@@ -23,6 +23,7 @@ router = APIRouter(prefix="/faces", tags=["face"])
 class ClusterMediaItem(BaseModel):
     id: int
     url: str
+    thumbnail: Optional[str] = None
     filename: str
     mime_type: Optional[str] = None
     file_size: Optional[int] = None
@@ -44,7 +45,7 @@ class ClusterGalleryItem(BaseModel):
     label: str
     user: Optional[ClusterUserInfo] = None
     face_count: int
-    thumbnail: Optional[ClusterMediaItem] = None
+    thumbnail: Optional[str] = None
     media: List[ClusterMediaItem]
 
 
@@ -62,10 +63,6 @@ async def get_event_gallery(
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1),
 ):
-    """
-    Paginated gallery of all face clusters detected in an event.
-    Only accessible to the event creator or approved participants.
-    """
     from models import Event, EventParticipant
 
     # --- Step 1: Authorization ---
@@ -148,10 +145,39 @@ async def get_event_gallery(
             cluster_media_map.setdefault(fe.cluster_id, [])
             try:
                 media_read = fe.media.to_media_read()
+
+                # --- Manual Face Crop ---
+                PADDING_RATIO = 0.40
+                if fe.facial_area:
+                    fa = fe.facial_area
+                    x, y, w, h = fa.get("x"), fa.get("y"), fa.get("w"), fa.get("h")
+
+                    if None not in (x, y, w, h):
+                        # Add padding
+                        pad_w = int(w * PADDING_RATIO)
+                        pad_h = int(h * PADDING_RATIO)
+
+                        new_x = max(x - pad_w, 0)
+                        new_y = max(y - pad_h, 0)
+                        new_w = w + 2 * pad_w
+                        new_h = h + 2 * pad_h
+
+                        thumb_url = (
+                            f"{media_read.url}"
+                            f"?tr=x-{new_x},y-{new_y},w-{new_w},h-{new_h},cm-extract,"
+                            f"w-400,h-400,c-force,q-80"
+                        )
+                    else:
+                        thumb_url = (
+                            f"{media_read.url}?tr=w-400,h-400,c-maintain_ratio,q-80"
+                        )
+
+                # Append cluster media
                 cluster_media_map[fe.cluster_id].append(
                     ClusterMediaItem(
                         id=media_read.id,
                         url=media_read.url,
+                        thumbnail=thumb_url,
                         filename=media_read.filename,
                         mime_type=media_read.mime_type,
                         file_size=media_read.file_size,
@@ -186,8 +212,10 @@ async def get_event_gallery(
                 profile_picture=profile_pic.url if profile_pic else None,
             )
 
-        thumbnail = (
-            max(
+        # Pick the best thumbnail (largest face area)
+        thumbnail_url = None
+        if media_list:
+            largest = max(
                 media_list,
                 key=lambda m: (
                     (m.face_area.get("w", 0) * m.face_area.get("h", 0))
@@ -195,16 +223,15 @@ async def get_event_gallery(
                     else 0
                 ),
             )
-            if media_list
-            else None
-        )
+            thumbnail_url = largest.thumbnail
+
         gallery.append(
             ClusterGalleryItem(
                 cluster_id=cluster.id,
                 label=cluster.label or f"Person {cluster.id}",
                 user=user_info,
                 face_count=len(media_list),
-                thumbnail=thumbnail,
+                thumbnail=thumbnail_url,
                 media=media_list,
             )
         )
@@ -215,6 +242,132 @@ async def get_event_gallery(
     return PaginatedResponse[ClusterGalleryItem](
         message=f"Gallery retrieved successfully for event {event.name}",
         data=gallery,
+        pagination=Pagination(
+            total=total,
+            page=page,
+            per_page=per_page,
+            total_pages=total_pages,
+        ),
+    )
+
+
+@router.get(
+    "/clusters/{cluster_id}", response_model=PaginatedResponse[ClusterGalleryItem]
+)
+async def get_cluster_faces(
+    cluster_id: int,
+    current_user: User = Depends(get_current_user),
+    session=Depends(get_session),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1),
+):
+    IMAGEKIT_TRANSFORM_BASE = "w-400,h-400,c-force,q-80"
+    PADDING_RATIO = 0.25
+
+    # --- Step 1: Get cluster ---
+    cluster = session.exec(
+        select(FaceCluster)
+        .where(FaceCluster.id == cluster_id)
+        .options(selectinload(FaceCluster.user))
+    ).first()
+
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    # --- Step 2: Get embeddings for this cluster ---
+    embeddings_stmt = (
+        select(FaceEmbedding)
+        .where(FaceEmbedding.cluster_id == cluster_id)
+        .options(selectinload(FaceEmbedding.media))
+    )
+    embeddings = session.exec(embeddings_stmt).all()
+
+    if not embeddings:
+        return PaginatedResponse[ClusterGalleryItem](
+            message="No faces found for this cluster",
+            data=[],
+            pagination=Pagination(total=0, page=page, per_page=per_page, total_pages=0),
+        )
+
+    # --- Step 3: Pagination ---
+    total = len(embeddings)
+    offset = (page - 1) * per_page
+    paginated_embeddings = embeddings[offset : offset + per_page]
+    total_pages = ((total - 1) // per_page) + 1 if total else 0
+
+    # --- Step 4: Build media list ---
+    media_list = []
+    for fe in paginated_embeddings:
+        if not fe.media:
+            continue
+
+        media = fe.media.to_media_read()
+        face_area = fe.facial_area or {}
+
+        # compute padded crop
+        thumb_url = media.url
+        if {"x", "y", "w", "h"} <= face_area.keys():
+            x, y, w, h = (
+                face_area["x"],
+                face_area["y"],
+                face_area["w"],
+                face_area["h"],
+            )
+            pad_w = int(w * PADDING_RATIO)
+            pad_h = int(h * PADDING_RATIO)
+            new_x = max(x - pad_w, 0)
+            new_y = max(y - pad_h, 0)
+            new_w = w + 2 * pad_w
+            new_h = h + 2 * pad_h
+            thumb_url = (
+                f"{media.url}"
+                f"?tr=x-{new_x},y-{new_y},w-{new_w},h-{new_h},cm-extract,{IMAGEKIT_TRANSFORM_BASE}"
+            )
+
+        media_list.append(
+            ClusterMediaItem(
+                id=media.id,
+                url=media.url,
+                thumbnail=thumb_url,
+                filename=media.filename,
+                mime_type=media.mime_type,
+                file_size=media.file_size,
+                duration=media.duration,
+                uploaded_at=(
+                    media.created_at.isoformat()
+                    if hasattr(media.created_at, "isoformat")
+                    else media.created_at
+                ),
+                face_area=face_area,
+                status=media.status,
+            )
+        )
+
+    # --- Step 5: Cluster user info ---
+    user_info = None
+    if cluster.user:
+        profile_pic = cluster.user.get_profile_picture_media(session)
+        user_info = ClusterUserInfo(
+            id=cluster.user.id,
+            full_name=cluster.user.full_name,
+            username=cluster.user.username,
+            profile_picture=profile_pic.url if profile_pic else None,
+        )
+
+    # --- Step 6: Build response item ---
+    item = ClusterGalleryItem(
+        cluster_id=cluster.id,
+        label=cluster.label or f"Person {cluster.id}",
+        user=user_info,
+        face_count=len(embeddings),
+        thumbnail=None,  # string thumbnail is now inside media items
+        media=media_list,
+    )
+
+    # --- Step 7: Return standard paginated response ---
+    return PaginatedResponse[ClusterGalleryItem](
+        message=f"Faces retrieved successfully for cluster {cluster_id}",
+        data=[item],
         pagination=Pagination(
             total=total,
             page=page,
