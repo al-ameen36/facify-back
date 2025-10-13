@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timezone
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     Query,
     UploadFile,
@@ -25,7 +26,7 @@ from models import (
     Pagination,
     SingleItemResponse,
 )
-from typing import Optional
+from typing import List, Optional
 from dotenv import load_dotenv
 from tasks.face import embed_media
 from utils.users import get_current_user
