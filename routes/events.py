@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Literal, Optional
 from fastapi import Depends, APIRouter, HTTPException, Query, Body
+from pydantic import BaseModel, Field
 from sqlmodel import Session, func, select, SQLModel
 from models import (
     EventRead,
@@ -40,7 +41,7 @@ async def join_event(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    # Event Status/Time Guards: Prevent joining events that have already ended
+    # Prevent joining past events
     now = datetime.now(timezone.utc)
     end_time = event.end_time.replace(tzinfo=timezone.utc)
     if end_time < now:
@@ -48,29 +49,35 @@ async def join_event(
             status_code=400, detail="Cannot join an event that has already ended"
         )
 
-    # Event Privacy Guards: Check if event is accessible
-    if not event.secret or event.secret != body.secret:
+    # Validate secret if event is private
+    if event.secret and event.secret != body.secret:
         raise HTTPException(status_code=403, detail="Invalid secret")
-    # check if already a participant
-    statement = select(EventParticipant).where(
-        EventParticipant.event_id == event_id,
-        EventParticipant.user_id == current_user.id,
-    )
-    existing = session.exec(statement).first()
+
+    # Check if already joined
+    existing = session.exec(
+        select(EventParticipant).where(
+            EventParticipant.event_id == event_id,
+            EventParticipant.user_id == current_user.id,
+        )
+    ).first()
     if existing:
         raise HTTPException(status_code=400, detail="Already a participant")
 
-    # By default, participant status is "pending"
-    # status = "approved" if event.auto_approve_participants else "pending"
-    # status = "approved" if event.auto_approve_uploads
+    # Auto approve if event allows it
+    status = (
+        "approved" if getattr(event, "auto_approve_participants", False) else "pending"
+    )
+
     participant = EventParticipant(
-        event_id=event_id, user_id=current_user.id, status="pending"
+        event_id=event_id,
+        user_id=current_user.id,
+        status=status,
     )
 
     session.add(participant)
     session.commit()
 
-    # Notify Host
+    # Notify host
     participant_user = session.get(User, current_user.id)
     send_notification.delay(
         user_id=event.created_by_id,
@@ -82,10 +89,13 @@ async def join_event(
         },
     )
 
-    return SingleItemResponse(
-        data=event,
-        message=f"{current_user.username} joined the event (pending approval)",
+    message = (
+        f"{current_user.username} joined the event (auto-approved)"
+        if status == "approved"
+        else f"{current_user.username} joined the event (pending approval)"
     )
+
+    return SingleItemResponse(data=event, message=message)
 
 
 @router.post("", response_model=SingleItemResponse[EventRead])
@@ -99,7 +109,8 @@ async def add_event(
     ).first()
     if existing_event:
         raise HTTPException(
-            status_code=400, detail="An event with the name '{value}' already exists."
+            status_code=400,
+            detail=f"An event with the name '{event_data.name}' already exists.",
         )
 
     try:
@@ -529,11 +540,15 @@ async def delete_event(
         raise HTTPException(status_code=500, detail=f"Failed to delete event: {str(e)}")
 
 
-@router.post("/{event_id}/participants/{user_id}/status")
-async def update_participant_status(
+class BulkUpdateParticipantStatusRequest(BaseModel):
+    user_ids: List[int] = Field(..., example=[1, 2, 3])
+    status: Literal["approved", "rejected", "pending"]
+
+
+@router.post("/{event_id}/participants/status")
+async def bulk_update_participant_status(
     event_id: int,
-    user_id: int,
-    status: str = Body(..., embed=True, regex="^(approved|rejected|pending)$"),
+    body: BulkUpdateParticipantStatusRequest,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -541,43 +556,42 @@ async def update_participant_status(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    # Only event creator can update status
     if event.created_by_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
     # Prevent self-approval
-    if user_id == current_user.id:
-        raise HTTPException(
-            status_code=400,
-            detail="You cannot approve/reject your own participation request",
-        )
+    if current_user.id in body.user_ids:
+        raise HTTPException(status_code=400, detail="Cannot modify your own status")
 
+    # Bulk update participants
     statement = select(EventParticipant).where(
         EventParticipant.event_id == event_id,
-        EventParticipant.user_id == user_id,
+        EventParticipant.user_id.in_(body.user_ids),
     )
-    participant = session.exec(statement).first()
-    if not participant:
-        raise HTTPException(status_code=404, detail="Participant not found")
+    participants = session.exec(statement).all()
 
-    participant.status = status
-    session.add(participant)
+    if not participants:
+        raise HTTPException(status_code=404, detail="No matching participants found")
+
+    for p in participants:
+        p.status = body.status
+        session.add(p)
+
+        # Notify participant
+        send_notification.delay(
+            user_id=p.user_id,
+            event="participant_status_changed",
+            data={
+                "event_id": event.id,
+                "event_name": event.name,
+                "status": body.status,
+                "message": f"Your participation request for '{event.name}' has been {body.status}.",
+            },
+        )
+
     session.commit()
-    session.refresh(participant)
-
-    # --- Notify the participant ---
-    send_notification.delay(
-        user_id=user_id,
-        event="participant_status_changed",
-        data={
-            "event_id": event.id,
-            "event_name": event.name,
-            "status": status,
-            "message": f"Your participation request for '{event.name}' has been {status}.",
-        },
-    )
 
     return {
-        "message": f"Participant {user_id} status updated to {status} for event {event_id}",
-        "participant": participant,
+        "message": f"{len(participants)} participant(s) updated to '{body.status}'",
+        "updated_user_ids": [p.user_id for p in participants],
     }
