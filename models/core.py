@@ -20,6 +20,12 @@ class PaginatedResponse(SQLModel, Generic[DataT]):
     pagination: Pagination
 
 
+class PaginatedSingleItemResponse(SQLModel, Generic[DataT]):
+    message: str
+    data: DataT
+    pagination: Pagination
+
+
 class SingleItemResponse(SQLModel, Generic[DataT]):
     message: str
     data: Optional[DataT]

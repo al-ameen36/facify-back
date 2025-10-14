@@ -12,6 +12,7 @@ from models import (
     PaginatedResponse,
     Pagination,
 )
+from models.core import PaginatedSingleItemResponse
 from utils.users import get_session, get_current_user
 
 router = APIRouter(prefix="/faces", tags=["face"])
@@ -252,7 +253,8 @@ async def get_event_gallery(
 
 
 @router.get(
-    "/clusters/{cluster_id}", response_model=PaginatedResponse[ClusterGalleryItem]
+    "/clusters/{cluster_id}",
+    response_model=PaginatedSingleItemResponse[ClusterGalleryItem],
 )
 async def get_cluster_faces(
     cluster_id: int,
@@ -274,14 +276,13 @@ async def get_cluster_faces(
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
 
-    # --- Step 2: Get embeddings for this cluster ---
+    # --- Step 2: Get embeddings with related media ---
     embeddings_stmt = (
         select(FaceEmbedding)
         .where(FaceEmbedding.cluster_id == cluster_id)
         .options(selectinload(FaceEmbedding.media))
     )
     embeddings = session.exec(embeddings_stmt).all()
-
     if not embeddings:
         return PaginatedResponse[ClusterGalleryItem](
             message="No faces found for this cluster",
@@ -289,23 +290,27 @@ async def get_cluster_faces(
             pagination=Pagination(total=0, page=page, per_page=per_page, total_pages=0),
         )
 
-    # --- Step 3: Pagination ---
-    total = len(embeddings)
-    offset = (page - 1) * per_page
-    paginated_embeddings = embeddings[offset : offset + per_page]
+    # --- Step 3: Deduplicate by media.id ---
+    media_map = {}
+    for fe in embeddings:
+        if fe.media and fe.media.id not in media_map:
+            media_map[fe.media.id] = fe
+
+    unique_embeddings = list(media_map.values())
+    total = len(unique_embeddings)
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
-    # --- Step 4: Build media list ---
+    # --- Step 4: Paginate unique media ---
+    offset = (page - 1) * per_page
+    paginated_embeddings = unique_embeddings[offset : offset + per_page]
+
+    # --- Step 5: Build media list ---
     media_list = []
     for fe in paginated_embeddings:
-        if not fe.media:
-            continue
-
         media = fe.media.to_media_read()
         face_area = fe.facial_area or {}
-
-        # compute padded crop
         thumb_url = media.url
+
         if {"x", "y", "w", "h"} <= face_area.keys():
             x, y, w, h = (
                 face_area["x"],
@@ -343,7 +348,7 @@ async def get_cluster_faces(
             )
         )
 
-    # --- Step 5: Cluster user info ---
+    # --- Step 6: Cluster user info ---
     user_info = None
     if cluster.user:
         profile_pic = cluster.user.get_profile_picture_media(session)
@@ -354,20 +359,20 @@ async def get_cluster_faces(
             profile_picture=profile_pic.url if profile_pic else None,
         )
 
-    # --- Step 6: Build response item ---
+    # --- Step 7: Build response item ---
     item = ClusterGalleryItem(
         cluster_id=cluster.id,
         label=cluster.label or f"Person {cluster.id}",
         user=user_info,
-        face_count=len(embeddings),
-        thumbnail=None,  # string thumbnail is now inside media items
+        face_count=len(unique_embeddings),
+        thumbnail=None,
         media=media_list,
     )
 
-    # --- Step 7: Return standard paginated response ---
-    return PaginatedResponse[ClusterGalleryItem](
+    # --- Step 8: Return response ---
+    return PaginatedSingleItemResponse[ClusterGalleryItem](
         message=f"Faces retrieved successfully for cluster {cluster_id}",
-        data=[item],
+        data=item,
         pagination=Pagination(
             total=total,
             page=page,
@@ -535,7 +540,7 @@ async def get_user_clusters(
     gallery_items.sort(key=lambda x: x.face_count, reverse=True)
 
     # --- Step 5: Return using standard paginated response ---
-    return PaginatedResponse[ClusterGalleryItem](
+    return PaginatedSingleItemResponse[ClusterGalleryItem](
         message=f"Clusters retrieved successfully for user {user_id}",
         data=gallery_items,
         pagination=Pagination(

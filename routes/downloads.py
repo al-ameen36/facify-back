@@ -1,8 +1,8 @@
 import os
 from datetime import datetime, timezone, timedelta
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 from models import (
@@ -219,69 +219,40 @@ async def create_cluster_download(
 @router.get("/zip/{job_id}")
 async def download_zip(
     job_id: str,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Download the generated ZIP file for a completed download job.
-    File is deleted immediately after download.
-    """
     job = session.get(DownloadJob, job_id)
-    if not job:
-        raise HTTPException(404, "Download job not found")
-
-    # Verify ownership
-    if job.user_id != current_user.id:
-        raise HTTPException(403, "You don't have access to this download")
-
-    # Check status
-    if job.status != DownloadJobStatus.COMPLETED:
-        raise HTTPException(400, f"Download is not ready. Status: {job.status}")
-
-    # Check expiry
-    if job.expires_at:
-        now = datetime.now(timezone.utc)
-        expires_at = (
-            job.expires_at.replace(tzinfo=timezone.utc)
-            if job.expires_at.tzinfo is None
-            else job.expires_at
-        )
-        if expires_at < now:
-            raise HTTPException(410, "Download link has expired")
-
-    # Check if file exists
-    if not job.file_path or not os.path.exists(job.file_path):
-        raise HTTPException(404, "Download file not found")
+    if not job or job.user_id != current_user.id:
+        raise HTTPException(404, "Download not found")
 
     file_path = job.file_path
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(404, "File not found")
 
-    # Determine filename based on cluster or bulk download
-    if job.cluster_id:
-        filename = f"cluster_{job.cluster_id}_photos.zip"
-    else:
-        filename = f"photos_{job.id[:8]}.zip"
+    filename = (
+        f"cluster_{job.cluster_id}_photos.zip"
+        if job.cluster_id
+        else f"photos_{job.id[:8]}.zip"
+    )
 
-    # Mark as deleted before serving
+    # Update job status before serving
     job.status = DownloadJobStatus.DELETED
     job.file_path = None
     session.add(job)
     session.commit()
 
-    # Return file with background cleanup
-    from fastapi import BackgroundTasks
+    def iterfile():
+        with open(file_path, "rb") as f:
+            yield from f
+        # ✅ After file fully streamed:
+        cleanup_file(file_path)
 
-    background = BackgroundTasks()
-    background.add_task(cleanup_file, file_path)
-
-    return FileResponse(
-        path=file_path,
-        filename=filename,
+    return StreamingResponse(
+        iterfile(),
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Type": "application/zip",
-        },
-        background=background,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
