@@ -313,35 +313,31 @@ async def get_event_media(
     is_event_creator = event.created_by_id == current_user.id
 
     # Event Privacy Guards: Restrict gallery access based on event privacy
-    if event.privacy == "private":
-        # Private events: only creator or approved participants can access gallery
-        if not is_event_creator:
-            participant_check = session.exec(
-                select(EventParticipant).where(
-                    EventParticipant.event_id == event_id,
-                    EventParticipant.user_id == current_user.id,
-                )
-            ).first()
+    # Private events: only creator or approved participants can access gallery
+    if not is_event_creator:
+        participant_check = session.exec(
+            select(EventParticipant).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == current_user.id,
+            )
+        ).first()
 
-            if not participant_check:
-                raise HTTPException(
-                    status_code=403,
-                    detail="You are not a participant of this private event",
-                )
-            elif participant_check.status == "pending":
-                raise HTTPException(
-                    status_code=403,
-                    detail="Your participation request is still pending approval",
-                )
-            elif participant_check.status == "rejected":
-                raise HTTPException(
-                    status_code=403, detail="Your participation request was rejected"
-                )
-            elif participant_check.status != "approved":
-                raise HTTPException(status_code=403, detail="Access denied")
-    elif event.privacy == "public":
-        # Public events: anyone can view the gallery (no additional checks needed)
-        pass
+        if not participant_check:
+            raise HTTPException(
+                status_code=403,
+                detail="You are not a participant of this private event",
+            )
+        elif participant_check.status == "pending":
+            raise HTTPException(
+                status_code=403,
+                detail="Your participation request is still pending approval",
+            )
+        elif participant_check.status == "rejected":
+            raise HTTPException(
+                status_code=403, detail="Your participation request was rejected"
+            )
+        elif participant_check.status != "approved":
+            raise HTTPException(status_code=403, detail="Access denied")
 
     # Validate status parameter
     valid_statuses = ["pending", "approved", "rejected"]

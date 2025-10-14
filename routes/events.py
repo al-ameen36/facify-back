@@ -406,36 +406,31 @@ async def get_single_event(
         raise HTTPException(status_code=404, detail="Event not found")
 
     # Event Privacy Guards: Check access based on privacy setting
-    if event.privacy == "private":
-        # Private events: only creator or approved participants can access
-        if event.created_by_id != current_user.id:
-            participant_check = session.exec(
-                select(EventParticipant).where(
-                    EventParticipant.event_id == event_id,
-                    EventParticipant.user_id == current_user.id,
-                )
-            ).first()
+    # Private events: only creator or approved participants can access
+    if event.created_by_id != current_user.id:
+        participant_check = session.exec(
+            select(EventParticipant).where(
+                EventParticipant.event_id == event_id,
+                EventParticipant.user_id == current_user.id,
+            )
+        ).first()
 
-            if not participant_check:
-                raise HTTPException(
-                    status_code=403,
-                    detail="You are not a participant of this private event",
-                )
-            elif participant_check.status == "pending":
-                raise HTTPException(
-                    status_code=403,
-                    detail="Your participation request is still pending approval",
-                )
-            elif participant_check.status == "rejected":
-                raise HTTPException(
-                    status_code=403, detail="Your participation request was rejected"
-                )
-            elif participant_check.status != "approved":
-                raise HTTPException(status_code=403, detail="Access denied")
-    elif event.privacy == "public":
-        # Public events: anyone can view basic info, but detailed access may require participation
-        # For now, we allow public access to public events
-        pass
+        if not participant_check:
+            raise HTTPException(
+                status_code=403,
+                detail="You are not a participant of this private event",
+            )
+        elif participant_check.status == "pending":
+            raise HTTPException(
+                status_code=403,
+                detail="Your participation request is still pending approval",
+            )
+        elif participant_check.status == "rejected":
+            raise HTTPException(
+                status_code=403, detail="Your participation request was rejected"
+            )
+        elif participant_check.status != "approved":
+            raise HTTPException(status_code=403, detail="Access denied")
 
     event_dict = event.model_dump()
     event_dict["cover_photo"] = event.get_cover_photo_media(session)
