@@ -212,9 +212,14 @@ async def create_cluster_download(
     )
 
 
+from fastapi.responses import FileResponse
+from fastapi.background import BackgroundTasks
+
+
 @router.get("/zip/{job_id}")
 async def download_zip(
     job_id: str,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -232,22 +237,20 @@ async def download_zip(
         else f"photos_{job.id[:8]}.zip"
     )
 
-    # Update job status before serving
+    # Update job status
     job.status = DownloadJobStatus.DELETED
     job.file_path = None
     session.add(job)
     session.commit()
 
-    def iterfile():
-        with open(file_path, "rb") as f:
-            yield from f
-        # ✅ After file fully streamed:
-        cleanup_file(file_path)
+    # Schedule cleanup after response is sent
+    background_tasks.add_task(cleanup_file, file_path)
 
-    return StreamingResponse(
-        iterfile(),
+    # FileResponse automatically includes Content-Length
+    return FileResponse(
+        path=file_path,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        filename=filename,
     )
 
 
