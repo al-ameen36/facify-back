@@ -174,9 +174,11 @@ async def upload_media(
                 )
             ).first()
             if old_usage:
-                old_usage.usage_type = MediaUsageType.COVER_PHOTO_ARCHIVED
-                session.add(old_usage)
-                session.commit()
+                old_media = session.get(Media, old_usage.media_id)
+                if old_media:
+                    delete_media_and_file(session, old_media)
+                    session.delete(old_usage)
+                    session.commit()
 
         # Upload to storage (e.g., ImageKit)
         uploaded_media = upload_file(
