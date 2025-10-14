@@ -26,6 +26,7 @@ from .media import (
 )
 from .face import FaceCluster, FaceEmbedding
 from .downloads import DownloadJob
+from .payments import Order
 
 # Rebuild models to resolve forward references
 AppBaseModel.model_rebuild()
@@ -57,6 +58,8 @@ FaceEmbedding.model_rebuild()
 FaceCluster.model_rebuild()
 
 DownloadJob.model_rebuild()
+
+Order.model_rebuild()
 
 
 # Export models
@@ -92,4 +95,6 @@ __all__ = [
     "FaceCluster",
     # Downloads
     "DownloadJob",
+    # Payments
+    "Order",
 ]
