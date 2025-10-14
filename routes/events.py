@@ -197,13 +197,16 @@ async def read_my_events_filtered(
 ):
     now = datetime.now(timezone.utc)
 
-    # Base query: events created by user OR joined
+    # Base query: events created by user OR where user is an approved participant
     query = (
         select(Event)
         .join(EventParticipant, Event.id == EventParticipant.event_id, isouter=True)
         .where(
             (Event.created_by_id == current_user.id)
-            | (EventParticipant.user_id == current_user.id)
+            | (
+                (EventParticipant.user_id == current_user.id)
+                & (EventParticipant.status == "approved")
+            )
         )
         .distinct()
     )
@@ -232,7 +235,7 @@ async def read_my_events_filtered(
     total_pages = ((total - 1) // per_page) + 1 if total else 0
 
     return PaginatedResponse[EventRead](
-        message=f"User {status or 'all'} events retrieved successfully",
+        message=f"User {status or 'all'} approved events retrieved successfully",
         data=events_with_media,
         pagination=Pagination(
             total=total,
