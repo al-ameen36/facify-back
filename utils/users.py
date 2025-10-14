@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import jwt
 from jwt import PyJWTError
@@ -63,18 +63,26 @@ def create_user(
 
 
 def create_access_token(sub: str, expires_delta: Optional[timedelta] = None) -> str:
-    expire = datetime.utcnow() + (
+    expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    payload = {"sub": sub, "type": "access", "exp": expire, "iat": datetime.utcnow()}
+    payload = {
+        "sub": sub,
+        "type": "access",
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+    }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def create_refresh_token(sub: str, expires_delta: Optional[timedelta] = None) -> str:
-    expire = datetime.utcnow() + (
-        expires_delta or timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    )
-    payload = {"sub": sub, "type": "refresh", "exp": expire, "iat": datetime.utcnow()}
+def create_refresh_token(sub: str) -> str:
+    expire = datetime.now(timezone.utc) + (timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+    payload = {
+        "sub": sub,
+        "type": "refresh",
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+    }
     token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
     active_refresh_tokens.add(token)
     return token

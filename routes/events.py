@@ -49,17 +49,8 @@ async def join_event(
         )
 
     # Event Privacy Guards: Check if event is accessible
-    if event.privacy == "private":
-        # Private events require a secret to join
-        if not event.secret or event.secret != body.secret:
-            raise HTTPException(
-                status_code=403, detail="Invalid secret for private event"
-            )
-    elif event.privacy == "public":
-        # Public events don't require a secret, but we still validate if provided
-        if body.secret and event.secret and event.secret != body.secret:
-            raise HTTPException(status_code=403, detail="Invalid secret")
-
+    if not event.secret or event.secret != body.secret:
+        raise HTTPException(status_code=403, detail="Invalid secret")
     # check if already a participant
     statement = select(EventParticipant).where(
         EventParticipant.event_id == event_id,
@@ -71,6 +62,7 @@ async def join_event(
 
     # By default, participant status is "pending"
     # status = "approved" if event.auto_approve_participants else "pending"
+    # status = "approved" if event.auto_approve_uploads
     participant = EventParticipant(
         event_id=event_id, user_id=current_user.id, status="pending"
     )

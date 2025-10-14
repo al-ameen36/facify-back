@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 from sqlmodel import (
+    Boolean,
     SQLModel,
     Field,
     Relationship,
@@ -37,7 +38,8 @@ class EventBase(SQLModel):
     end_time: datetime
     privacy: str
     allow_contributions: bool = True
-    auto_approve_uploads: bool = True
+    auto_approve_uploads: bool = False
+    auto_approve_participants: bool = False
 
 
 class EventRead(EventBase):
@@ -90,7 +92,15 @@ class Event(AppBaseModel, table=True):
     privacy: str = "private"
     secret: str = Field(default_factory=generate_event_secret)
     allow_contributions: bool = True
-    auto_approve_uploads: bool = True
+    auto_approve_uploads: bool = False
+    auto_approve_participants: bool = Field(
+        sa_column=Column(
+            Boolean,
+            server_default="False",
+            default=False,
+            nullable=False,
+        )
+    )
     # Relationships
     created_by_id: int = Field(
         sa_column=Column(
