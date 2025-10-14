@@ -30,10 +30,6 @@ class BulkDownloadRequest(BaseModel):
     media_ids: List[int]
 
 
-class ClusterDownloadRequest(BaseModel):
-    cluster_id: int
-
-
 class DownloadJobResponse(BaseModel):
     job_id: str
     status: str
@@ -139,9 +135,9 @@ async def create_bulk_download(
     )
 
 
-@router.post("/cluster", response_model=DownloadJobResponse)
+@router.get("/cluster/{cluster_id}", response_model=DownloadJobResponse)
 async def create_cluster_download(
-    request: ClusterDownloadRequest,
+    cluster_id: int,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -149,7 +145,7 @@ async def create_cluster_download(
     Create a download job for all original images in a face cluster.
     User must have access to the event containing the cluster.
     """
-    cluster = session.get(FaceCluster, request.cluster_id)
+    cluster = session.get(FaceCluster, cluster_id)
     if not cluster:
         raise HTTPException(404, "Cluster not found")
 
@@ -219,7 +215,6 @@ async def create_cluster_download(
 @router.get("/zip/{job_id}")
 async def download_zip(
     job_id: str,
-    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
