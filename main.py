@@ -42,9 +42,9 @@ async def lifespan(app: FastAPI):
             is_active=True,
         )
         test_user = User(
-            email="muhdabdullahi361@gmail.com",
-            username="maa",
-            full_name="Muhammad Al-Ameen Abdullahi",
+            email="user@email.com",
+            username="user",
+            full_name="John Doe",
             hashed_password=hashed_password,
             is_active=True,
         )

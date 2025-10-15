@@ -1,6 +1,5 @@
 from typing import Annotated, List, Optional
 from datetime import timedelta
-from dotenv import load_dotenv
 from fastapi import (
     BackgroundTasks,
     Cookie,
@@ -18,7 +17,6 @@ from sqlmodel import Session, select
 from models import (
     MediaUsageType,
     SingleItemResponse,
-    Token,
     User,
     UserRead,
     UserCreate,

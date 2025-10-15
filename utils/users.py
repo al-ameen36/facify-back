@@ -4,7 +4,7 @@ import jwt
 from jwt import PyJWTError
 from jose import JWTError
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status, Request
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlmodel import Session, select
 from dotenv import load_dotenv
