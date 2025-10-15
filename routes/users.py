@@ -1,7 +1,9 @@
-from typing import Annotated, List
+from typing import Annotated, List, Optional
 from datetime import timedelta
+from dotenv import load_dotenv
 from fastapi import (
     BackgroundTasks,
+    Cookie,
     Depends,
     APIRouter,
     File,
@@ -11,6 +13,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
 from sqlmodel import Session, select
 from models import (
     MediaUsageType,
@@ -38,12 +41,15 @@ from utils.users import (
     get_user_by_email,
     create_user,
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS,
+    active_refresh_tokens,
     verify_password_reset_token,
     update_user_password,
     send_password_reset_email,
 )
 from db import get_session
 from utils.users import send_verification_email
+
 
 router = APIRouter(prefix="/user", tags=["user"])
 
@@ -169,11 +175,18 @@ async def verify_email(token: str, session: Session = Depends(get_session)):
     return {"message": "Email verified successfully"}
 
 
-@router.post("/login", response_model=Token)
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    expires_in: int
+    user: UserRead
+
+
+@router.post("/login", response_model=TokenResponse)
 async def login_for_access_token(
+    response: Response,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     session: Session = Depends(get_session),
-    response: Response = None,  # inject FastAPI response
 ):
     user = authenticate_user(session, form_data.username, form_data.password)
     if not user:
@@ -185,43 +198,80 @@ async def login_for_access_token(
 
     access_token = create_access_token(user.username)
     refresh_token = create_refresh_token(user.username)
-
     user_data = user.to_user_read(session)
 
-    return Token(
+    # Set refresh token as HttpOnly cookie
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        path="/",
+    )
+
+    # Return only access token in response body
+    return TokenResponse(
         access_token=access_token,
-        refresh_token=refresh_token,
         token_type="bearer",
         expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=user_data,
     )
 
 
-@router.post("/refresh", response_model=Token)
+@router.post("/refresh", response_model=TokenResponse)
 async def refresh_access_token(
-    refresh_data: RefreshTokenRequest, session: Session = Depends(get_session)
+    response: Response,
+    refresh_token: Optional[str] = Cookie(None),
+    session: Session = Depends(get_session),
 ):
-    username = verify_refresh_token(refresh_data.refresh_token)
-    if not username:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired refresh token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    """
+    Refresh endpoint that reads refresh_token from HttpOnly cookie
+    """
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="Refresh token missing")
 
-    user = get_user_by_username(session, username)
+    # Verify the refresh token
+    username = verify_refresh_token(refresh_token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+    # Check if token is still active
+    if refresh_token not in active_refresh_tokens:
+        raise HTTPException(status_code=401, detail="Refresh token has been revoked")
+
+    # Get user from database
+    user = session.exec(select(User).where(User.username == username)).first()
+
     if not user:
-        revoke_refresh_token(refresh_data.refresh_token)
         raise HTTPException(status_code=401, detail="User not found")
 
+    # Create new tokens
     new_access_token = create_access_token(user.username)
+    new_refresh_token = create_refresh_token(user.username)
 
-    return Token(
+    # Revoke old refresh token
+    active_refresh_tokens.discard(refresh_token)
+
+    # Set new refresh token as HttpOnly cookie
+    response.set_cookie(
+        key="refresh_token",
+        value=new_refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        path="/",
+    )
+
+    user_data = user.to_user_read(session)
+
+    return TokenResponse(
         access_token=new_access_token,
-        refresh_token=refresh_data.refresh_token,
         token_type="bearer",
         expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user=user,
+        user=user_data,
     )
 
 
