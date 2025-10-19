@@ -2,6 +2,12 @@ from db import engine
 from sqlmodel import Session, select
 from models import User
 from utils.users import decode_token
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SIO_REDIS_URL = os.getenv("SIO_REDIS_URL")
 
 import socketio
 
@@ -11,7 +17,7 @@ sio = socketio.AsyncServer(
     cors_credentials=True,
     logger=True,
     engineio_logger=True,
-    client_manager=socketio.AsyncRedisManager("redis://localhost:6379/1"),
+    client_manager=socketio.AsyncRedisManager(f"{SIO_REDIS_URL}/1"),
 )
 
 

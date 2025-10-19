@@ -129,7 +129,7 @@ async def get_current_user(
 
 
 async def send_password_reset_email(email: str, token: str):
-    reset_url = f"{os.environ.get("RESET_PASSWORD_URL")}?token={token}"
+    reset_url = f"{os.environ.get('RESET_PASSWORD_URL')}?token={token}"
     message = MessageSchema(
         subject="Password Reset Request",
         recipients=[email],

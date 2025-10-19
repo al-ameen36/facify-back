@@ -1,6 +1,9 @@
 __pycache__
-.env
 venv
 app.db
 static
 images/
+
+.env
+.env.production
+.env.development

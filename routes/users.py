@@ -80,7 +80,7 @@ async def register_user(
     )
 
 
-@router.post("/face", response_model=SingleItemResponse[list[MediaRead]])
+@router.post("/face", response_model=SingleItemResponse[UserRead])
 async def upload_face_capture(
     files: List[UploadFile] = File(...),
     angles: List[str] = Form(...),
@@ -94,8 +94,6 @@ async def upload_face_capture(
 
     if len(files) != len(angles):
         raise HTTPException(400, "Each uploaded file must have a matching angle")
-
-    uploaded_media_list = []
 
     try:
         for file, angle in zip(files, angles):
@@ -144,14 +142,16 @@ async def upload_face_capture(
                 approval_status="approved",
                 tags=angle,
             )
-            uploaded_media_list.append(saved_media.to_media_read())
+
+            user = session.exec(select(User).where(User.id == current_user.id)).first()
+            user_data = user.to_user_read(session)
 
             # Trigger embedding generation (async)
             embed_media.delay(saved_media.id, saved_media.external_url)
 
         return SingleItemResponse(
-            data=uploaded_media_list,
-            message=f"Successfully uploaded {len(uploaded_media_list)} face captures (replacing existing ones if any).",
+            data=user_data,
+            message=f"Successfully uploaded face captures (replacing existing ones if any).",
         )
 
     except Exception as e:
@@ -204,7 +204,8 @@ async def login_for_access_token(
         value=refresh_token,
         httponly=True,
         secure=True,
-        samesite="lax",
+        samesite="None",
+        domain=".facify.xyz",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         path="/",
     )
@@ -258,7 +259,8 @@ async def refresh_access_token(
         value=new_refresh_token,
         httponly=True,
         secure=True,
-        samesite="lax",
+        samesite="None",
+        domain=".facify.xyz",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         path="/",
     )

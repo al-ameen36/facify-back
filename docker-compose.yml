@@ -1,0 +1,59 @@
+services:
+  facify-db:
+    image: ankane/pgvector:latest
+    container_name: fastify_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+
+  facify-redis:
+    image: redis:7-alpine
+    container_name: fastify_redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+  facify-api:
+    build: .
+    container_name: fastify_api
+    depends_on:
+      facify-db:
+        condition: service_healthy
+      facify-redis:
+        condition: service_started
+    env_file:
+      - .env.production
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/code
+    command: bash -c "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000"
+
+  facify-worker:
+    build: .
+    container_name: fastify_worker
+    depends_on:
+      facify-db:
+        condition: service_healthy
+      facify-redis:
+        condition: service_started
+    env_file:
+      - .env.production
+    volumes:
+      - .:/code
+    command: celery -A workers worker --loglevel=info
+
+volumes:
+  postgres_data:
