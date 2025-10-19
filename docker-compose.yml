@@ -17,7 +17,6 @@ services:
       timeout: 5s
       retries: 5
 
-
   facify-redis:
     image: redis:7-alpine
     container_name: fastify_redis
@@ -35,8 +34,8 @@ services:
         condition: service_started
     env_file:
       - .env.production
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     volumes:
       - .:/code
     command: bash -c "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000"
@@ -54,6 +53,29 @@ services:
     volumes:
       - .:/code
     command: celery -A workers worker --loglevel=info
+
+  nginx:
+    image: nginx:alpine
+    container_name: fastify_nginx
+    restart: always
+    depends_on:
+      - facify-api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+
+  certbot:
+    image: certbot/certbot
+    container_name: fastify_certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
 
 volumes:
   postgres_data:
