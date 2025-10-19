@@ -1,7 +1,6 @@
 services:
   facify-db:
     image: ankane/pgvector:latest
-    container_name: fastify_db
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -9,8 +8,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
+    networks:
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -19,63 +18,62 @@ services:
 
   facify-redis:
     image: redis:7-alpine
-    container_name: fastify_redis
     restart: always
-    ports:
-      - "6379:6379"
+    networks:
+      - backend
 
   facify-api:
     build: .
-    container_name: fastify_api
-    depends_on:
-      facify-db:
-        condition: service_healthy
-      facify-redis:
-        condition: service_started
     env_file:
       - .env.production
     expose:
       - "8000"
     volumes:
       - .:/code
+    networks:
+      - backend
+    depends_on:
+      - facify-db
+      - facify-redis
     command: bash -c "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000"
 
   facify-worker:
     build: .
-    container_name: fastify_worker
-    depends_on:
-      facify-db:
-        condition: service_healthy
-      facify-redis:
-        condition: service_started
     env_file:
       - .env.production
     volumes:
       - .:/code
+    networks:
+      - backend
+    depends_on:
+      - facify-db
+      - facify-redis
     command: celery -A workers worker --loglevel=info
 
   nginx:
     image: nginx:alpine
-    container_name: fastify_nginx
-    restart: always
-    depends_on:
-      - facify-api
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./certbot/conf:/etc/letsencrypt:ro
       - ./certbot/www:/var/www/certbot:ro
+    networks:
+      - backend
 
   certbot:
     image: certbot/certbot
-    container_name: fastify_certbot
     volumes:
       - ./certbot/conf:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot
     entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - backend
 
 volumes:
   postgres_data:
+
+networks:
+  backend:
+    driver: bridge
