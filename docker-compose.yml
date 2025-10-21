@@ -25,7 +25,7 @@ services:
   facify-api:
     build: .
     env_file:
-      - .env.production
+      - .env
     expose:
       - "8000"
     volumes:
@@ -40,7 +40,7 @@ services:
   facify-worker:
     build: .
     env_file:
-      - .env.production
+      - .env
     volumes:
       - .:/code
     networks:
